@@ -48,7 +48,7 @@ g{() {
 alias g}='git stash pop'
 
 alias g^="git push origin HEAD"
-alias gv="git pull --rebase origin HEAD"
+alias gv="git pull --rebase"
 
 grb() {
   if [ -n "$1" ]; then

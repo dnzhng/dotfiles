@@ -1,5 +1,4 @@
 alias ..="cd .."
 alias ...="cd ../.."
 alias ....="cd ../../.."
-alias kk="cd ~/workspace"
-alias ss="cd ~/Documents/Senior\ Citizens/"
+alias kk="cd ~/Code"

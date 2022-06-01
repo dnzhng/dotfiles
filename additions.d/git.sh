@@ -50,6 +50,11 @@ alias g}='git stash pop'
 alias g^="git push origin HEAD"
 alias gv="git pull --rebase"
 
+gshove() { 
+  local branch_name="$(git rev-parse --symbolic-full-name --abbrev-ref HEAD)"
+  git push -u origin $branch_name
+}
+
 grb() {
   if [ -n "$1" ]; then
     git push origin HEAD:refs/heads/$1

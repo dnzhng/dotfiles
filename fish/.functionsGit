@@ -1,0 +1,13 @@
+function gd
+  git diff $argv
+  set -l untracked "$(git ls-files --others --exclude-standard)"
+  if [ ! -z $untracked ];
+    echo -e "\n$WHITEUntracked files:$NC"
+    echo $untracked
+  end
+end
+
+function gshove
+  set -l branch_name="$(git rev-parse --symbolic-full-name --abbrev-ref HEAD)"
+  git push -u origin $branch_name
+end

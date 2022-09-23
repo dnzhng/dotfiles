@@ -1,0 +1,23 @@
+# novell.com/coolsolutions/tools/17142.html
+# stackoverflow.com/questions/5947742/how-to-change-the-output-color-of-echo-in-linux/
+set BLACK '\[\e[0;30m\]'
+set BLUE '\[\e[0;34m\]'
+set GREEN '\[\e[0;32m\]'
+set CYAN '\[\e[0;36m\]'
+set RED '\[\e[0;31m\]'
+set PURPLE '\[\e[0;35m\]'
+set BROWN '\[\e[0;33m\]'
+set LIGHTGRAY '\[\e[0;37m\]'
+set DARKGRAY '\[\e[1;30m\]'
+set LIGHTBLUE '\[\e[1;34m\]'
+set LIGHTGREEN '\[\e[1;32m\]'
+set LIGHTCYAN '\[\e[1;36m\]'
+set LIGHTRED '\[\e[1;31m\]'
+set LIGHTPURPLE '\[\e[1;35m\]'
+set YELLOW '\[\e[1;33m\]'
+set WHITE '\[\e[1;37m\]'
+set NC '\[\e[0m\]' # no color
+
+# osxdaily.com/2012/02/21/add-color-to-the-terminal-in-mac-os-x/
+set CLICOLOR 1
+set LSCOLORS gxgxcxdxbxegedabagacad

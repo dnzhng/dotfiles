@@ -8,6 +8,6 @@ function gd
 end
 
 function gshove
-  set -l branch_name="$(git rev-parse --symbolic-full-name --abbrev-ref HEAD)"
+  set -l branch_name "$(git rev-parse --symbolic-full-name --abbrev-ref HEAD)"
   git push -u origin $branch_name
 end

@@ -11,6 +11,13 @@ Source additions.sh in your .bash_profile
 
 ### Fish Shell set up
 - Install fish shell
+```
+$ brew install fish
+$ fish
+$ fish_add_path /opt/homebrew/bin
+$ echo "/opt/homebrew/bin/fish" | sudo tee -a /etc/shells
+$ chsh -s /opt/homebrew/bin/fish
+```
 - source `fish/config.fish` from ~/.config/fish/config.fish`
 - Add `fisher` for package manager
 - Install

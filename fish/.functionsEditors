@@ -2,3 +2,7 @@ function code
   set location "$PWD/$argv"
   open -n -b "com.microsoft.VSCode" --args $location
 end
+
+function zed
+  /usr/local/bin/zed $argv
+end

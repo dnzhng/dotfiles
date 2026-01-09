@@ -1,0 +1,35 @@
+{
+  "model": "us.anthropic.claude-opus-4-5-20251101-v1:0",
+  "alwaysThinkingEnabled": true,
+  "permissions": {
+    "allow": [
+      "*",
+      "Bash",
+      "Read",
+      "Write",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Task",
+      "TodoWrite",
+      "WebFetch",
+      "WebSearch",
+      "NotebookEdit",
+      "NotebookRead",
+      "AskUserQuestion",
+      "Skill",
+      "SlashCommand",
+      "BashOutput",
+      "KillShell",
+      "mcp__playwright__*",
+      "mcp__chrome-devtools__*"
+    ],
+    "deny": [],
+    "ask": [
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(rm:*)"
+    ],
+    "defaultMode": "acceptEdits"
+  }
+}

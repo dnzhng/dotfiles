@@ -12,6 +12,11 @@ echo "Symlinking CLAUDE.md..."
 rm -f "$CLAUDE_DIR/CLAUDE.md"
 ln -s "$SCRIPT_DIR/CLAUDE.md" "$CLAUDE_DIR/CLAUDE.md"
 
+# Symlink statusline-command.sh
+echo "Symlinking statusline-command.sh..."
+rm -f "$CLAUDE_DIR/statusline-command.sh"
+ln -s "$SCRIPT_DIR/statusline-command.sh" "$CLAUDE_DIR/statusline-command.sh"
+
 # Merge settings files
 echo "Merging settings..."
 BASE_SETTINGS="$SCRIPT_DIR/settings.base.json"

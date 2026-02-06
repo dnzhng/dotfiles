@@ -1,3 +1,7 @@
+# Artifacts
+
+When working on files (e.g., review documents, data files), check `~/.claude/artifacts/` first.
+
 # Code Style
 
 - Use ES modules (import/export), not CommonJS (require)

@@ -31,5 +31,9 @@
       "Bash(rm:*)"
     ],
     "defaultMode": "acceptEdits"
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "~/.claude/statusline-command.sh"
   }
 }

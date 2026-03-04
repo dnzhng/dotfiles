@@ -1,5 +1,8 @@
 {
-  "model": "us.anthropic.claude-opus-4-5-20251101-v1:0",
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
+  "model": "us.anthropic.claude-opus-4-6-v1",
   "alwaysThinkingEnabled": true,
   "permissions": {
     "allow": [
@@ -25,11 +28,7 @@
       "mcp__chrome-devtools__*"
     ],
     "deny": [],
-    "ask": [
-      "Bash(git commit:*)",
-      "Bash(git push:*)",
-      "Bash(rm:*)"
-    ],
+    "ask": ["Bash(git commit:*)", "Bash(git push:*)", "Bash(rm:*)"],
     "defaultMode": "acceptEdits"
   },
   "statusLine": {

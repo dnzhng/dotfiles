@@ -7,3 +7,9 @@ for file in ~/Code/dotfiles/fish/.{functions*,exports*,aliases*}
   end
 end
 
+for file in ~/Code/dotfiles/private/fish/.{functions*,exports*,aliases*}
+  if test -r $file
+    source "$file"
+  end
+end
+

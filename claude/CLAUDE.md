@@ -86,3 +86,11 @@ After modifying `~/dotfiles/claude/settings.base.json`, run:
 ```
 ~/dotfiles/claude/install.sh
 ```
+
+# Tmux
+
+Tmux config and session persistence (tmux-resurrect + tmux-continuum via TPM) are managed in `~/dotfiles/tmux/`. To set up on a new machine — symlinks `~/.tmux.conf`, clones TPM, installs plugins — run:
+```
+~/dotfiles/tmux/install.sh
+```
+The script is idempotent; re-run it after changing the plugin list in `tmux/tmux.conf`. After a reboot, run `tmux` and continuum auto-restores the last session (snapshots saved every 15 min to `~/.local/share/tmux/resurrect/`).

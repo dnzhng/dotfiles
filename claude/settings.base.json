@@ -2,11 +2,11 @@
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
   },
-  "model": "us.anthropic.claude-opus-4-6-v1",
+  "model": "claude-opus-4-8",
   "alwaysThinkingEnabled": true,
+  "showClearContextOnPlanAccept": true,
   "permissions": {
     "allow": [
-      "*",
       "Bash",
       "Read",
       "Write",

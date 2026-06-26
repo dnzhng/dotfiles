@@ -45,27 +45,42 @@ if [ -f "$PRIVATE_DIR/claude/settings.local.json" ]; then
     ln -s "$PRIVATE_DIR/claude/settings.local.json" "$CLAUDE_DIR/settings.local.json"
 fi
 
-# Merge settings files
+# Merge settings: layer dotfiles over the existing settings.json (do not overwrite).
 echo "Merging settings..."
 BASE_SETTINGS="$SCRIPT_DIR/settings.base.json"
 LOCAL_SETTINGS="$CLAUDE_DIR/settings.local.json"
 OUTPUT_SETTINGS="$CLAUDE_DIR/settings.json"
 
-if ! command -v jq &> /dev/null; then
-    echo "Error: jq is required but not installed. Install it with:"
-    echo "  brew install jq  # macOS"
-    echo "  apt install jq   # Ubuntu/Debian"
-    exit 1
-fi
+command -v jq >/dev/null || { echo "Error: jq is required (brew/apt install jq)"; exit 1; }
 
-if [ -f "$LOCAL_SETTINGS" ]; then
-    # Merge base with local (local overrides base)
-    jq -s '.[0] * .[1]' "$BASE_SETTINGS" "$LOCAL_SETTINGS" > "$OUTPUT_SETTINGS"
-    echo "  Merged settings.base.json + settings.local.json -> settings.json"
+# Precedence order (rightmost wins for scalars/objects):
+# existing settings.json (preserves gohan + runtime keys) < base < local
+inputs=()
+[ -f "$OUTPUT_SETTINGS" ] && inputs+=("$OUTPUT_SETTINGS")
+inputs+=("$BASE_SETTINGS")
+[ -f "$LOCAL_SETTINGS" ] && inputs+=("$LOCAL_SETTINGS")
+
+# Deep-merge layers, order-preserving-union the three permission arrays (nothing
+# runtime-added is lost), and strip top-level _-prefixed annotation keys. Atomic write
+# via temp file; abort loudly if jq fails so the existing settings.json is never clobbered.
+if jq -s '
+  def odedupe: reduce .[] as $x ([]; if any(.[]; . == $x) then . else . + [$x] end);
+  (reduce .[] as $o ({}; . * $o)) as $m
+  | ([.[].permissions.allow // []] | add // [] | odedupe) as $allow
+  | ([.[].permissions.deny  // []] | add // [] | odedupe) as $deny
+  | ([.[].permissions.ask   // []] | add // [] | odedupe) as $ask
+  | $m
+  | .permissions.allow = $allow
+  | .permissions.deny  = $deny
+  | .permissions.ask   = $ask
+  | with_entries(select(.key | startswith("_") | not))
+' "${inputs[@]}" > "$OUTPUT_SETTINGS.tmp"; then
+    mv "$OUTPUT_SETTINGS.tmp" "$OUTPUT_SETTINGS"
+    echo "  Merged ${#inputs[@]} layer(s) -> settings.json (existing keys preserved)"
 else
-    # Just copy base settings
-    cp "$BASE_SETTINGS" "$OUTPUT_SETTINGS"
-    echo "  Base settings only (no private settings.local.json found)"
+    rm -f "$OUTPUT_SETTINGS.tmp"
+    echo "Error: jq failed to merge settings; left existing settings.json unchanged" >&2
+    exit 1
 fi
 
 # Run private install script if present

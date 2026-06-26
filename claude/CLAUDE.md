@@ -1,3 +1,63 @@
+<!-- ══════════════════════════════════════════════════════════════════════
+     TRIAL: Working Principles — behavioral-guidelines experiment
+     Window: 2026-06-26 → 2026-07-10 (2 weeks)
+     To REVERT: delete this whole block (through the END marker below),
+                then run ~/dotfiles/claude/install.sh
+     ══════════════════════════════════════════════════════════════════════ -->
+
+# Working Principles  *(trial — decide by 2026-07-10)*
+
+> **TRIAL — ACTION REQUIRED ON/AFTER 2026-07-10:** These guidelines are a 2-week
+> experiment. Compare today's date (the session's currentDate) against **2026-07-10**.
+> If it is on or after that date, STOP before other work and ask Daniel whether to
+> **keep**, **revert**, or **extend** them — then act on his answer.
+
+## Think before coding
+State assumptions explicitly; if uncertain, ask. If multiple interpretations exist, surface
+them — don't silently pick one. Prefer the simpler approach and say so; push back when
+warranted. When something's unclear, stop and name it. (Does not override the "Workflow
+Shortcuts" no-confirm rule — ask only on genuine ambiguity, not routine steps.)
+
+## Simplicity first
+Minimum code that solves the problem; nothing speculative. No features beyond what was asked,
+no abstractions for single-use code, no unrequested configurability, no error handling for
+impossible cases. If it's 200 lines and could be 50, rewrite it. Test: "would a senior
+engineer call this overcomplicated?"
+
+## Surgical changes
+Touch only what the request requires. Don't "improve" adjacent code, comments, or formatting;
+don't refactor what isn't broken; match existing style even if you'd do it differently. Remove
+imports/vars/functions YOUR change orphaned; leave pre-existing dead code (mention it, don't
+delete). Every changed line should trace to the request. (Extends the "Exploring Files"
+no-format rule.)
+
+## Goal-driven execution
+Turn tasks into verifiable goals: "fix the bug" → "write a failing test that reproduces it,
+then make it pass." For multi-step work, state a brief plan with a verify check per step, then
+loop until each check passes.
+
+## Worktrees on request only
+Don't spin up git worktrees for isolation in single-repo, single-agent work. Create them only
+when (a) the user explicitly asks for parallel work / a worktree / a second session, or
+(b) executing a multi-agent plan with genuinely independent chunks. See "Parallel Work on
+Carrot" and "Plans" for the how.
+
+## Delegation & context hygiene
+The context window is the constraint — the parent should receive conclusions, not the work that
+produced them. **Delegate** to a subagent when answering needs reading >2–3 files, a broad
+search, or a DB/log query; when work is independent/parallelizable; or when you want a fresh,
+unbiased read. **Keep inline** for quick targeted edits (~1 file), tightly-coupled changes
+where agents would collide, or work needing frequent back-and-forth. Use a **workflow** (not
+ad-hoc subagents) for deterministic multi-stage fan-out — subagents can't spawn subagents.
+Don't over-delegate; trivial tasks are cheaper inline (see "right-size the plan").
+- Explore and Plan agents skip this CLAUDE.md — restate any rule they must honor in their prompt.
+- Don't print whole files / large JSON into the conversation — save to a tmp file, pull only the
+  critical fields.
+- When compacting, preserve: files modified this session, exact identifiers (IDs, metric/branch
+  names), verify/test commands, and any unfinished step.
+
+<!-- ══════════════ END TRIAL block (delete to here to revert) ══════════════ -->
+
 # Artifacts
 
 When working on files (e.g., review documents, data files), check `~/.claude/artifacts/` first.
@@ -86,6 +146,8 @@ After modifying `~/dotfiles/claude/settings.base.json`, run:
 ```
 ~/dotfiles/claude/install.sh
 ```
+
+`install.sh` **merges** dotfiles into the live `~/.claude/settings.json` — it no longer overwrites it. Keys added at runtime (plugins enabled via `/plugin`, in-session permission approvals) are preserved, and the three permission lists (`allow`/`deny`/`ask`) are **unioned** across the existing file + dotfiles. Consequence: **removing a permission requires editing `~/.claude/settings.json` directly** — deleting it from dotfiles alone won't drop it, because the old copy survives in the live file. (To make dotfiles authoritative for permissions instead, drop the three union lines in `install.sh`.)
 
 # Tmux
 

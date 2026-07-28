@@ -1,16 +1,4 @@
-<!-- ══════════════════════════════════════════════════════════════════════
-     TRIAL: Working Principles — behavioral-guidelines experiment
-     Window: 2026-06-26 → 2026-07-10 (2 weeks)
-     To REVERT: delete this whole block (through the END marker below),
-                then run ~/dotfiles/claude/install.sh
-     ══════════════════════════════════════════════════════════════════════ -->
-
-# Working Principles  *(trial — decide by 2026-07-10)*
-
-> **TRIAL — ACTION REQUIRED ON/AFTER 2026-07-10:** These guidelines are a 2-week
-> experiment. Compare today's date (the session's currentDate) against **2026-07-10**.
-> If it is on or after that date, STOP before other work and ask Daniel whether to
-> **keep**, **revert**, or **extend** them — then act on his answer.
+# Working Principles
 
 ## Think before coding
 State assumptions explicitly; if uncertain, ask. If multiple interpretations exist, surface
@@ -39,8 +27,8 @@ loop until each check passes.
 ## Worktrees on request only
 Don't spin up git worktrees for isolation in single-repo, single-agent work. Create them only
 when (a) the user explicitly asks for parallel work / a worktree / a second session, or
-(b) executing a multi-agent plan with genuinely independent chunks. See "Parallel Work on
-Carrot" and "Plans" for the how.
+(b) executing a multi-agent plan with genuinely independent chunks. See your parallel-work
+and Plans guidance for the how.
 
 ## Delegation & context hygiene
 The context window is the constraint — the parent should receive conclusions, not the work that
@@ -55,8 +43,6 @@ Don't over-delegate; trivial tasks are cheaper inline (see "right-size the plan"
   critical fields.
 - When compacting, preserve: files modified this session, exact identifiers (IDs, metric/branch
   names), verify/test commands, and any unfinished step.
-
-<!-- ══════════════ END TRIAL block (delete to here to revert) ══════════════ -->
 
 # Artifacts
 
@@ -74,7 +60,8 @@ Do NOT format or lint files when exploring or reading them. Only format/lint fil
 # Git
 
 - Use [conventional commits](https://www.conventionalcommits.org/en/v1.0.0/) for commit messages: `feat:`, `fix:`, `refactor:`, `test:`, `chore:`, `docs:`, `style:`, `perf:`. Add a scope when it clarifies (e.g., `fix(auth): prevent double modal open`). Keep the subject concise and lowercase.
-- When creating branches, prefix with `dnzhng/` (e.g., `dnzhng/CXP-203313/short-description`)
+- Don't reference other PRs by number in commit messages (e.g., "follow-up to #1234", "reverts parts of #5678"). Cross-PR context belongs in the PR description, not the commit — PR numbers rot as history is rewritten or repos migrate.
+- When creating branches, prefix with `dnzhng/` (e.g., `dnzhng/PROJ-1234/short-description`)
 
 # GitHub
 

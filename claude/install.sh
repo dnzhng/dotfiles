@@ -9,6 +9,9 @@ CLAUDE_DIR="$HOME/.claude"
 # Ensure ~/.claude exists
 mkdir -p "$CLAUDE_DIR"
 
+# Distribute shared AGENTS.md first (writes ~/.claude/AGENTS.md for the @AGENTS.md import in CLAUDE.md)
+"$DOTFILES_DIR/shared/install.sh"
+
 # Build CLAUDE.md — base, with optional private layer appended
 echo "Building CLAUDE.md..."
 cp "$SCRIPT_DIR/CLAUDE.md" "$CLAUDE_DIR/CLAUDE.md"

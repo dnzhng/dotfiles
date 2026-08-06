@@ -1,0 +1,6 @@
+# https://github.com/jesseduffield/lazygit/blob/master/docs/Config.md
+git:
+  diffRenderers:
+    - colorArg: always
+      # https://github.com/jesseduffield/lazygit/blob/master/docs/Custom_DiffRenderers.md
+      command: delta --dark --paging=never

@@ -2,6 +2,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DOTFILES_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 if [ "$(uname)" = "Darwin" ]; then
     TARGET_DIR="$HOME/Library/Application Support/lazygit"
 else
@@ -9,6 +10,15 @@ else
 fi
 TARGET="$TARGET_DIR/config.yml"
 DESIRED="$SCRIPT_DIR/config.yml"
+
+# A private config, if present, fully overrides the base one (lazygit has no
+# base+private merge, so the private file wins wholesale). Used for
+# machine-specific configs — e.g. a lazygit older than the git.diffRenderers key.
+PRIVATE_CONFIG="$DOTFILES_DIR/private/lazygit/config.yml"
+if [ -f "$PRIVATE_CONFIG" ]; then
+    DESIRED="$PRIVATE_CONFIG"
+    echo "Using private lazygit config override."
+fi
 
 # Require lazygit and delta
 if ! command -v lazygit > /dev/null; then

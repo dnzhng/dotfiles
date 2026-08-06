@@ -47,9 +47,9 @@ For small changes (< ~50 LOC or single-file), skip the full multi-agent pipeline
 
 # Settings
 
-After modifying `~/dotfiles/claude/settings.base.json`, run:
+After modifying `~/dotfiles/ai/claude/settings.base.json`, run:
 ```
-~/dotfiles/claude/install.sh
+~/dotfiles/ai/claude/install.sh
 ```
 
 `install.sh` **merges** dotfiles into the live `~/.claude/settings.json` — it no longer overwrites it. Keys added at runtime (plugins enabled via `/plugin`, in-session permission approvals) are preserved, and the three permission lists (`allow`/`deny`/`ask`) are **unioned** across the existing file + dotfiles. Consequence: **removing a permission requires editing `~/.claude/settings.json` directly** — deleting it from dotfiles alone won't drop it, because the old copy survives in the live file. (To make dotfiles authoritative for permissions instead, drop the three union lines in `install.sh`.)

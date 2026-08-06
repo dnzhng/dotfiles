@@ -2,8 +2,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DOTFILES_DIR="$(dirname "$SCRIPT_DIR")"
-PRIVATE_SHARED="$DOTFILES_DIR/private/shared"
+DOTFILES_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PRIVATE_SHARED="$DOTFILES_DIR/private/ai/shared"
 
 # Build merged AGENTS.md — base, with optional private layer appended
 echo "Building AGENTS.md..."

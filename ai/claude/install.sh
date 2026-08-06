@@ -2,15 +2,15 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DOTFILES_DIR="$(dirname "$SCRIPT_DIR")"
-PRIVATE_DIR="$DOTFILES_DIR/private"
+DOTFILES_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PRIVATE_DIR="$DOTFILES_DIR/private/ai"
 CLAUDE_DIR="$HOME/.claude"
 
 # Ensure ~/.claude exists
 mkdir -p "$CLAUDE_DIR"
 
 # Distribute shared AGENTS.md first (writes ~/.claude/AGENTS.md for the @AGENTS.md import in CLAUDE.md)
-"$DOTFILES_DIR/shared/install.sh"
+"$SCRIPT_DIR/../shared/install.sh"
 
 # Build CLAUDE.md — base, with optional private layer appended
 echo "Building CLAUDE.md..."
@@ -38,6 +38,27 @@ for dir in "$SCRIPT_DIR/agents" "$PRIVATE_DIR/claude/agents"; do
         name=$(basename "$agent")
         rm -f "$CLAUDE_DIR/agents/$name"
         ln -s "$agent" "$CLAUDE_DIR/agents/$name"
+    done
+done
+
+# Symlink skill dirs from both base and private, one symlink per skill.
+# A destination that exists and is NOT one of our symlinks (e.g. a skill
+# installed via /plugin or dropped in manually) is left alone.
+echo "Symlinking skills..."
+mkdir -p "$CLAUDE_DIR/skills"
+for dir in "$SCRIPT_DIR/skills" "$PRIVATE_DIR/claude/skills"; do
+    [ -d "$dir" ] || continue
+    for skill in "$dir"/*/; do
+        [ -d "$skill" ] || continue
+        name=$(basename "$skill")
+        dest="$CLAUDE_DIR/skills/$name"
+        if [ -L "$dest" ]; then
+            rm -f "$dest"
+        elif [ -e "$dest" ]; then
+            echo "  Skipped $name (exists, not a dotfiles symlink — leaving it alone)"
+            continue
+        fi
+        ln -s "${skill%/}" "$dest"
     done
 done
 

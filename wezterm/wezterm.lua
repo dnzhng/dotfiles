@@ -49,4 +49,21 @@ config.colors = {
 -- Scrollback (functional, invisible)
 config.scrollback_lines = 10000
 
+-- CTRL+SHIFT+E prompts to rename the current tab (or from a shell:
+-- `wezterm cli set-tab-title "name"`).
+config.keys = {
+  {
+    key = 'E',
+    mods = 'CTRL|SHIFT',
+    action = wezterm.action.PromptInputLine {
+      description = 'Enter new name for tab',
+      action = wezterm.action_callback(function(window, pane, line)
+        if line then
+          window:active_tab():set_title(line)
+        end
+      end),
+    },
+  },
+}
+
 return config

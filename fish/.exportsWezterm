@@ -1,0 +1,5 @@
+# WezTerm ships its CLI inside the app bundle (wezterm, wezterm-gui,
+# wezterm-mux-server). Put it on PATH. Auto-sourced by fish/config.fish.
+if test -d /Applications/WezTerm.app/Contents/MacOS
+  fish_add_path /Applications/WezTerm.app/Contents/MacOS
+end

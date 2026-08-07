@@ -12,10 +12,10 @@
 local wezterm = require 'wezterm'
 local config = wezterm.config_builder()
 
--- Font (iTerm2: Monaco 12). Monaco ships no bold/italic faces, so WezTerm
--- synthesizes them — same as iTerm2 did.
-config.font = wezterm.font 'Monaco'
-config.font_size = 12
+-- Font (was Monaco 12, matching iTerm2). JetBrains Mono ships real
+-- bold/italic faces and is bundled with WezTerm.
+config.font = wezterm.font 'JetBrains Mono'
+config.font_size = 12.5
 
 -- Window transparency (iTerm2 transparency 0.25 -> 0.75 opacity).
 -- Blur is intentionally left off to match iTerm2 (add

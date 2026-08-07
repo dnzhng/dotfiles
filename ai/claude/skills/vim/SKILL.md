@@ -14,16 +14,18 @@ Open vim in a tmux split.
 3. Run it in the split, e.g. for no argument:
 
 ```bash
-tmux split-window -b -p 85 -c "#{pane_current_path}" vim .
+tmux split-window -t "$TMUX_PANE" -b -p 85 -c "#{pane_current_path}" vim .
 ```
 
 or with a file:
 
 ```bash
-tmux split-window -b -p 85 -c "#{pane_current_path}" vim path/to/file
+tmux split-window -t "$TMUX_PANE" -b -p 85 -c "#{pane_current_path}" vim path/to/file
 ```
 
 This opens vim in a new pane taking 85% of the window above the current
-pane; focus stays on the Claude pane so the conversation can continue.
+pane, pinned to the window that initiated the skill (`$TMUX_PANE`) so it
+can't land in whatever window happens to be active; focus stays on the
+Claude pane so the conversation can continue.
 4. Confirm to the user in one short line, including what was opened. Do not
 edit the file yourself — the editing happens in vim, driven by the user.

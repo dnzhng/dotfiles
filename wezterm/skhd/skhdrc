@@ -1,0 +1,7 @@
+# skhd hotkeys — symlinked to ~/.config/skhd/skhdrc by install.sh.
+# Reload after edits: skhd --reload
+
+# Toggle WezTerm (iTerm2-style) — option + space.
+# Runs the AppleScript source (symlinked to ~/.config/wezterm by
+# wezterm/install.sh); no compile step — edits take effect on the next press.
+alt - space : /usr/bin/osascript "$HOME/.config/wezterm/toggle-wezterm.applescript"

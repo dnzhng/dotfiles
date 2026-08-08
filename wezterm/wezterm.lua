@@ -12,6 +12,13 @@
 local wezterm = require 'wezterm'
 local config = wezterm.config_builder()
 
+-- Advertise xterm-256color over SSH instead of WezTerm's default "wezterm",
+-- so remote boxes (e.g. bento) that lack the wezterm terminfo entry drive tmux
+-- correctly. Matches iTerm2; also makes the tmux terminal-overrides for
+-- xterm-256color (Tc true color) apply. Without this, tmux falls back to a
+-- dumb terminal description and mis-handles CR, mangling git progress output.
+config.term = 'xterm-256color'
+
 -- Font (was Monaco 12, matching iTerm2). JetBrains Mono ships real
 -- bold/italic faces and is bundled with WezTerm.
 config.font = wezterm.font 'JetBrains Mono'

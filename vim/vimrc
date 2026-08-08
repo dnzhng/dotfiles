@@ -52,44 +52,74 @@ highlight GitGutterChange ctermbg=3
 highlight GitGutterDelete ctermbg=1
 highlight GitGutterChangeDelete ctermbg=3
 
-" Swap the terminal's ANSI palette to base16-ocean while editing, then restore
-" on exit. base16-ocean renders against the terminal's colors (cterm mode, no
-" termguicolors), so the palette has to match the colorscheme.
+" Theme the terminal as base16-ocean while vim runs, scoped to vim's tmux
+" pane when tmux is present (mirrors dotfiles/ai/pi/extensions/ocean-terminal.ts).
 "
-" Uses standard OSC sequences (OSC 4 = palette, 10/11/12 = fg/bg/cursor) via
-" echoraw(), so it works in any modern terminal — WezTerm, iTerm2, etc. This
-" replaces the old iTerm2-only `SetProfile=Ocean` escape, which WezTerm ignores.
-" Inside tmux the sequences are wrapped in DCS passthrough so they reach the
-" outer terminal (needs `set -g allow-passthrough on`, which tmux.conf sets).
+" - Inside tmux: per-pane options only. window-style fills the pane with ocean
+"   bg/fg (an explicit bg also makes the pane opaque under WezTerm's
+"   window_background_opacity), pane-colours remaps the 16 ANSI slots for this
+"   pane alone. Nothing terminal-wide is emitted, so sibling panes/windows
+"   keep their stock colors. All unset on VimLeave.
+" - Outside tmux: terminal-wide OSC swap (OSC 4 palette + 10/11/12
+"   fg/bg/cursor) via echoraw(), restored on VimLeave.
+"
+" The palette uses the canonical base16 16-color mapping, NOT the iTerm-style
+" "brights repeat 1-6" scheme this used before. base16-vim's cterm colors
+" assume it: CursorLine renders on slot 10 expecting base01 (#343d46, a
+" subtle dark bar) and Visual on slot 11 expecting base02 (#4f5b66) — with
+" bright green/yellow in those slots, selections were light-on-light.
 if !has('gui_running')
-  " base16-ocean mapped into the 16 ANSI slots (matches the iTerm2 Ocean
-  " profile this used to switch to).
-  let s:ocean_colors =
-    \ "\033]4;0;#2b303b;1;#bf616a;2;#a3be8c;3;#ebcb8b;4;#8fa1b3;5;#b48ead"
-    \ . ";6;#96b5b4;7;#c0c5ce;8;#65737e;9;#bf616a;10;#a3be8c;11;#ebcb8b"
-    \ . ";12;#8fa1b3;13;#b48ead;14;#96b5b4;15;#eff1f5\007"
-    \ . "\033]10;#c0c5ce\007\033]11;#2b303b\007\033]12;#c0c5ce\007"
-  " Reset palette + fg/bg/cursor back to the terminal's configured defaults.
-  let s:reset_colors = "\033]104\007\033]110\007\033]111\007\033]112\007"
+  " Slots 0-7  = base00 08 0B 0A 0D 0E 0C 05
+  " Slots 8-15 = base03 09 01 02 04 06 0F 07
+  let s:ocean_palette = [
+    \ '#2b303b', '#bf616a', '#a3be8c', '#ebcb8b', '#8fa1b3', '#b48ead', '#96b5b4', '#c0c5ce',
+    \ '#65737e', '#d08770', '#343d46', '#4f5b66', '#a7adba', '#dfe1e8', '#ab7967', '#eff1f5',
+    \ ]
 
-  function! s:emit_term_colors(seq) abort
-    " Inside tmux, wrap in the DCS passthrough sequence so the OSC codes reach
-    " the outer terminal; every embedded ESC must be doubled.
-    let l:seq = a:seq
-    if exists('$TMUX')
-      let l:seq = "\033Ptmux;" . substitute(a:seq, "\033", "\033\033", 'g') . "\033\\"
+  " tmux path: one tmux call with \;-separated commands.
+  function! s:tmux_theme(on) abort
+    let pane = shellescape($TMUX_PANE)
+    if a:on
+      let cmds = ['set -p -t ' . pane . ' window-style ' . shellescape('bg=#2b303b,fg=#c0c5ce')]
+      for i in range(16)
+        call add(cmds, 'set -p -t ' . pane . ' ' . shellescape('pane-colours[' . i . ']') . ' ' . shellescape(s:ocean_palette[i]))
+      endfor
+    else
+      let cmds = ['set -pu -t ' . pane . ' window-style', 'set -pu -t ' . pane . ' pane-colours']
+    endif
+    call system('tmux ' . join(cmds, ' \; '))
+  endfunction
+
+  " Non-tmux path: terminal-wide OSC swap.
+  function! s:osc_theme(on) abort
+    if a:on
+      let seq = ''
+      for i in range(16)
+        let seq .= "\033]4;" . i . ";" . s:ocean_palette[i] . "\007"
+      endfor
+      let seq .= "\033]10;#c0c5ce\007\033]11;#2b303b\007\033]12;#c0c5ce\007"
+    else
+      let seq = "\033]104\007\033]110\007\033]111\007\033]112\007"
     endif
     if exists('*echoraw')
-      call echoraw(l:seq)
+      call echoraw(seq)
     else
-      call writefile([l:seq], '/dev/tty', 'b')
+      call writefile([seq], '/dev/tty', 'b')
+    endif
+  endfunction
+
+  function! s:apply_term_theme(on) abort
+    if exists('$TMUX') && exists('$TMUX_PANE')
+      call s:tmux_theme(a:on)
+    else
+      call s:osc_theme(a:on)
     endif
   endfunction
 
   augroup term_theme_switch
     autocmd!
-    autocmd VimEnter,ColorScheme * call s:emit_term_colors(s:ocean_colors)
-    autocmd VimLeave * call s:emit_term_colors(s:reset_colors)
+    autocmd VimEnter,ColorScheme * call s:apply_term_theme(1)
+    autocmd VimLeave * call s:apply_term_theme(0)
   augroup END
 endif
 

@@ -21,6 +21,11 @@ new one.
 
 Plugins in use: base16-vim (colorscheme), vim-airline (+themes), vim-fugitive,
 vim-gitgutter, fzf (+fzf.vim), ag.vim, vim-slim. The colorscheme is base16-ocean;
-`vimrc` swaps the terminal's ANSI palette to match via OSC sequences on entry and
-restores it on exit, wrapped in tmux DCS passthrough when inside tmux (works in
-WezTerm, iTerm2, etc.; no iTerm2 profile needed).
+`vimrc` themes the terminal to match while vim runs, scoped per-pane when tmux
+is present (tmux `window-style` + `pane-colours` on vim's pane — no
+terminal-wide OSC, so sibling panes/windows keep their stock colors, and the
+explicit bg renders opaque under WezTerm's `window_background_opacity`).
+Outside tmux it falls back to a terminal-wide OSC palette swap, restored on
+exit. The palette is the canonical base16 16-color mapping (slot 10 = base01,
+11 = base02, ...) — required for base16-vim's cterm colors to render as
+designed, e.g. CursorLine as a subtle dark bar instead of bright green.

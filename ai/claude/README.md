@@ -19,13 +19,15 @@ here.
 | `ai/claude/settings.base.json` | `~/.claude/settings.json` | **deep-merged**, never overwritten |
 | `ai/claude/statusline-command.sh` | `~/.claude/statusline-command.sh` | symlinked |
 | `ai/claude/agents/*.md` | `~/.claude/agents/` | symlinked |
-| `ai/claude/skills/*/SKILL.md` | `~/.claude/skills/` | symlinked per skill dir |
+| `ai/shared/skills/*/SKILL.md` | `~/.claude/skills/` | symlinked per skill dir via `ai/shared/install.sh` |
 | `private/ai/claude/*` | `~/.claude/` | optional private layer (see below) |
 
 Skills are symlinked one directory at a time, and a destination that already
 exists and isn't a dotfiles symlink (e.g. a skill installed via `/plugin` or
-dropped in manually) is skipped, never overwritten. The private layer can add
-its own skills via `private/ai/claude/skills/`.
+dropped in manually) is skipped, never overwritten. Base skills live in
+`ai/shared/skills/` so other harnesses can share them (opencode auto-loads
+`~/.claude/skills/` as external skills). The private layer can add its own
+skills via `private/ai/claude/skills/`.
 
 ## Settings are merged, not replaced
 

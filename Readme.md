@@ -22,4 +22,4 @@ docs. Install scripts are idempotent and safe to re-run.
 | [vim](vim/) | vimrc + native Vim 8 packages, base16-ocean | [vim/README.md](vim/README.md) |
 | [lazygit](lazygit/) | Config with delta as the diff renderer | [lazygit/README.md](lazygit/README.md) |
 | [ai/claude](ai/claude/) | Claude Code settings + CLAUDE.md, layered with private overrides | [ai/claude/README.md](ai/claude/README.md) |
-| [ai/shared](ai/shared/) | Portable AGENTS.md distributed to Claude Code, opencode, pi, gemini | — |
+| [ai/shared](ai/shared/) | Portable AGENTS.md + shared skills (AGENTS.md to Claude Code, opencode, pi, gemini; skills to ~/.claude/skills, which opencode also scans) | — |

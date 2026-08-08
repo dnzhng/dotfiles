@@ -26,6 +26,6 @@ tmux split-window -t "$TMUX_PANE" -b -p 85 -c "#{pane_current_path}" vim path/to
 This opens vim in a new pane taking 85% of the window above the current
 pane, pinned to the window that initiated the skill (`$TMUX_PANE`) so it
 can't land in whatever window happens to be active; focus stays on the
-Claude pane so the conversation can continue.
+agent pane so the conversation can continue.
 4. Confirm to the user in one short line, including what was opened. Do not
 edit the file yourself — the editing happens in vim, driven by the user.

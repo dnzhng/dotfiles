@@ -39,4 +39,28 @@ for dest in "${DESTINATIONS[@]}"; do
     fi
 done
 
+# Symlink shared skill dirs into ~/.claude/skills, one symlink per skill.
+# opencode auto-loads ~/.claude/skills as external skills, so this single
+# target covers both Claude Code and opencode — deliberately NOT seeding
+# ~/.config/opencode/skills too, which would double-load them.
+echo "Symlinking skills..."
+if [ -d "$HOME/.claude" ]; then
+    mkdir -p "$HOME/.claude/skills"
+    for skill in "$SCRIPT_DIR/skills"/*/; do
+        [ -d "$skill" ] || continue
+        name=$(basename "$skill")
+        dest="$HOME/.claude/skills/$name"
+        if [ -L "$dest" ]; then
+            rm -f "$dest"
+        elif [ -e "$dest" ]; then
+            echo "  Skipped $name (exists, not a dotfiles symlink — leaving it alone)"
+            continue
+        fi
+        ln -s "${skill%/}" "$dest"
+        echo "  Linked $name"
+    done
+else
+    echo "  Skipped skills (~/.claude not found)"
+fi
+
 echo "Done!"

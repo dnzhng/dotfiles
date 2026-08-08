@@ -1,0 +1,25 @@
+{
+  "defaultThinkingLevel": "high",
+  "packages": [
+    "npm:pi-web-access",
+    "npm:@ff-labs/pi-fff",
+    "npm:pi-subagents"
+  ],
+  "compaction": {
+    "enabled": true,
+    "reserveTokens": 16384,
+    "keepRecentTokens": 20000
+  },
+  "retry": {
+    "enabled": true,
+    "maxRetries": 3,
+    "baseDelayMs": 2000
+  },
+  "theme": "base16-ocean-dark",
+  "tuiMode": "fullscreen",
+  "hideThinkingBlock": true,
+  "quietStartup": true,
+  "skills": [
+    "~/.claude/skills"
+  ]
+}

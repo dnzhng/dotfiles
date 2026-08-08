@@ -39,7 +39,9 @@ config.colors = {
   background = '#000000',
   foreground = '#bbbbbb',
   cursor_bg = '#bbbbbb',
-  cursor_fg = '#ffffff',
+  -- Dark glyph on the light block cursor: white-on-light-gray made the
+  -- character under the cursor unreadable (noticed in vim, fixed globally).
+  cursor_fg = '#2b303b',
   cursor_border = '#bbbbbb',
   selection_bg = '#b5d5ff',
   selection_fg = '#000000',

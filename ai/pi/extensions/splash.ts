@@ -2,13 +2,13 @@
  * Splash — centered startup header for new sessions.
  *
  * Uses the public ctx.ui.setHeader() API to replace the built-in startup
- * header with a centered splash: the block-letter pi logo in the theme
- * accent color, then a two-column block — session info (version / model /
- * branch / cwd) on the left, loaded resources (context / skills / prompts /
- * extensions / themes) on the right. The resource lists are gathered from
- * ~/.pi/agent + settings.json (pi's resourceLoader isn't extension-visible);
- * themes come from ctx.ui.getAllThemes(). Stacks to one column on narrow
- * terminals. Designed to pair with "Quiet startup" in settings, which hides
+ * header with a two-column splash: the block-letter pi logo in the theme
+ * accent color above session info (version / model / branch / cwd) on the
+ * left, loaded resources (context / skills / prompts / extensions / themes)
+ * on the right — equal-width columns separated by a thin vertical divider. The resource lists are
+ * gathered from ~/.pi/agent + settings.json (pi's resourceLoader isn't
+ * extension-visible); themes come from ctx.ui.getAllThemes(). Stacks to one
+ * column on narrow terminals. Designed to pair with "Quiet startup" in settings, which hides
  * pi's own resources list so it isn't duplicated below the splash. Applied
  * on startup, new, and reload; skipped on resume/fork.
  */
@@ -32,8 +32,7 @@ const LOGO = [
 	"████        ████",
 ];
 
-const ONBOARDING = "Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.";
-const COLUMN_GAP = 4;
+const DIVIDER_GAP = 2; // spaces on each side of the │ column divider
 const MIN_TWO_COLUMN_WIDTH = 64;
 const RIGHT_COLUMN_MAX = 52;
 // Vertical fill target: leave room for the editor/footer dock plus slack so
@@ -180,7 +179,6 @@ export class SplashHeader {
 		const dim = (s: string) => theme.fg("dim", s);
 		const lines: string[] = [];
 		for (const [name, items] of info.sections) {
-			if (lines.length > 0) lines.push("");
 			lines.push(heading(`[${name}]`));
 			const body = items.length ? items.join(", ") : "—";
 			for (const wrapped of wrapList(body, colWidth - 2)) {
@@ -199,38 +197,52 @@ export class SplashHeader {
 		const accent = (s: string) => theme.bold(theme.fg("accent", s));
 		const dim = (s: string) => theme.fg("dim", s);
 
-		const content: string[] = LOGO.map((row) => centerPad(visibleWidth(row), width) + accent(row));
-		content.push("");
-
 		const info = this.infoLines();
 		const infoW = Math.max(...info.plain.map((l) => l.length));
-		const rightW = Math.min(RIGHT_COLUMN_MAX, Math.max(20, width - infoW - COLUMN_GAP));
-		const twoCol = width >= MIN_TWO_COLUMN_WIDTH && infoW + COLUMN_GAP + 20 <= width;
+		const logoW = Math.max(...LOGO.map((row) => visibleWidth(row)));
+		const dividerW = 1 + DIVIDER_GAP * 2;
+		// Equal-width columns: the left column grows past its content width up
+		// to RIGHT_COLUMN_MAX so both sides match; its content stays centered.
+		const minLeftW = Math.max(logoW, infoW);
+		const leftW = Math.max(minLeftW, Math.min(RIGHT_COLUMN_MAX, Math.floor((width - dividerW) / 2)));
+		const rightW = Math.min(leftW, Math.max(20, width - leftW - dividerW));
+		const twoCol = width >= MIN_TWO_COLUMN_WIDTH && leftW + dividerW + 20 <= width;
 
+		// Left column: logo and session-info block centered within the column.
+		// In two-column mode the eye measures padding to the divider, not the
+		// nominal column edge, so center against the column plus the gap left
+		// of the divider; round biases any odd remainder left so the right pad
+		// never reads larger. Clamped so full-width content can't overflow.
+		const visualLeftW = twoCol ? leftW + DIVIDER_GAP : leftW;
+		const logoPad = " ".repeat(Math.min(Math.round((visualLeftW - logoW) / 2), leftW - logoW));
+		const infoPad = " ".repeat(Math.min(Math.round((visualLeftW - infoW) / 2), leftW - infoW));
+		const leftLines = [...LOGO.map((row) => logoPad + accent(row)), "", ...info.styled.map((line) => infoPad + line)];
+
+		const content: string[] = [];
 		if (twoCol) {
 			const sections = this.sectionLines(rightW);
-			const blockW = infoW + COLUMN_GAP + rightW;
+			const blockW = leftW + dividerW + rightW;
 			const left = centerPad(blockW, width);
-			const rowCount = Math.max(info.styled.length, sections.length);
+			const rowCount = Math.max(leftLines.length, sections.length);
+			// Vertically center the left column against the taller sections list.
+			const leftTop = Math.max(0, Math.floor((rowCount - leftLines.length) / 2));
 			for (let i = 0; i < rowCount; i++) {
+				const li = i - leftTop;
 				const leftCell =
-					i < info.styled.length
-						? info.styled[i]! + " ".repeat(Math.max(0, infoW - visibleWidth(info.styled[i]!)))
-						: " ".repeat(infoW);
+					li >= 0 && li < leftLines.length
+						? leftLines[li]! + " ".repeat(Math.max(0, leftW - visibleWidth(leftLines[li]!)))
+						: " ".repeat(leftW);
 				const right = sections[i] ?? "";
-				content.push(left + leftCell + " ".repeat(COLUMN_GAP) + right);
+				content.push(left + leftCell + " ".repeat(DIVIDER_GAP) + dim("│") + " ".repeat(DIVIDER_GAP) + right);
 			}
 		} else {
 			const sections = this.sectionLines(Math.min(RIGHT_COLUMN_MAX, Math.max(20, width - 4)));
-			const blockW = Math.max(infoW, RIGHT_COLUMN_MAX);
+			const blockW = Math.max(leftW, RIGHT_COLUMN_MAX);
 			const left = centerPad(blockW, width);
-			for (const line of info.styled) content.push(left + line);
+			for (const line of leftLines) content.push(left + line);
 			content.push("");
 			for (const line of sections) content.push(left + line);
 		}
-
-		content.push("");
-		content.push(centerPad(ONBOARDING.length, width) + dim(ONBOARDING));
 
 		// Vertically center within the estimated viewport (terminal minus the
 		// editor/footer dock). Emit no bottom fill: the end-following scroll

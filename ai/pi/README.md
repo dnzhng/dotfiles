@@ -29,11 +29,19 @@ Scroll-indicator borders keep only their "↑ N more" text. Layout knobs at the 
 (blank cols each side, default 2), `INNER_PAD` (cols between panel edge and
 text, default 1), `EDITOR_BG`.
 
+The same file also insets pi's built-in footer by `OUTER_MARGIN` (idempotent
+`FooterComponent.prototype.render` patch, same mechanism as max-width.ts) so
+the footer's left/right edges land on the panel edges instead of the screen
+edges — one continuous bottom dock.
+
 `extensions/splash.ts` — centered startup header via the public
-`ctx.ui.setHeader()` API: block-letter pi logo in the theme accent color,
-then a two-column block — session info (version / model / branch / cwd) on
-the left, loaded resources (context / skills / prompts / extensions / themes)
-on the right. Resources are gathered from `~/.pi/agent` + `settings.json`
+`ctx.ui.setHeader()` API: a two-column block of equal-width columns with a
+thin │ divider — the block-letter pi logo in the theme accent color above
+session info (version / model / branch / cwd), both centered within the left
+column, loaded resources (context / skills / prompts / extensions / themes)
+on the right, the left column vertically centered against the taller sections
+list. Resources are gathered from
+`~/.pi/agent` + `settings.json`
 (pi doesn't expose its resourceLoader to extensions); themes via
 `ctx.ui.getAllThemes()`. Stacks to one column on narrow terminals. Vertically
 centers within the estimated viewport (terminal minus dock), so the

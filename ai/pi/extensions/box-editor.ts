@@ -11,9 +11,13 @@
  * autocomplete menu — colored with this.borderColor (quiet at rest,
  * thinking-level/bash colors when active). Scroll-indicator borders keep
  * only their "↑ N more" text.
+ *
+ * Also insets the built-in footer by the same OUTER_MARGIN (prototype patch,
+ * same approach as max-width.ts) so the footer's left/right edges land on the
+ * panel edges instead of the screen edges — one continuous bottom dock.
  */
 
-import { CustomEditor, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { CustomEditor, FooterComponent, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
@@ -95,7 +99,26 @@ export class BoxEditor extends CustomEditor {
 	}
 }
 
+// Marker survives /reload: the dist module (and its prototypes) is shared
+// across extension runtimes, so patch only once.
+const FOOTER_PATCHED = Symbol.for("dotfiles.boxEditor.footerAligned");
+
+/** Inset the built-in footer by OUTER_MARGIN so its edges meet the panel's. */
+function alignFooterWithPanel(): void {
+	const proto = FooterComponent.prototype as any;
+	if (proto[FOOTER_PATCHED]) return;
+	const original = proto.render;
+	proto.render = function (this: unknown, width: number): string[] {
+		const margin = " ".repeat(OUTER_MARGIN);
+		return original
+			.call(this, width - OUTER_MARGIN * 2)
+			.map((line: string) => margin + line + margin);
+	};
+	proto[FOOTER_PATCHED] = true;
+}
+
 export default function (pi: ExtensionAPI) {
+	alignFooterWithPanel();
 	pi.on("session_start", (_event, ctx) => {
 		ctx.ui.setEditorComponent(
 			(tui, theme, keybindings) => new BoxEditor(tui, theme, keybindings),

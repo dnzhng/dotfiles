@@ -54,6 +54,25 @@ is capped instead (scrollbar stays at the terminal's right edge). Any
 structural surprise in regular mode falls back to stock full-width rendering.
 Idempotent, re-applies on `/reload`.
 
+`extensions/mcp/` — connects pi to MCP servers, reading
+`~/.pi/agent/mcp-servers.json` at runtime (a symlink to the canonical
+dotfiles MCP store, created by the store's install.sh; `$PI_MCP_SERVERS`
+overrides the path). The extension itself carries no machine-specific paths.
+`{{MCP_USHER_PORT}}` resolution and project-key cwd matching mirror the
+store's install.sh; config is re-read on every `session_start`, so `/reload`
+picks up edits. MCP tools
+register as `mcp__<server>__<tool>` but stay INACTIVE — the always-active
+`mcp_search` tool finds and enables matches mid-turn via pi's dynamic tool
+loading, so the full catalog (~100 tools across glean, atlassian,
+google-workspace, wittycart, playwright) never bloats the context.
+Connections are session-scoped: background connect on `session_start`
+(startup never blocks on usher/VPN), close on `session_shutdown`, one
+transparent reconnect on a failed call. `/mcp` posts a TUI-only status table
+(not sent to the LLM); `/mcp reconnect [server]` retries. Requires
+`npm install` in the directory once (`@modelcontextprotocol/sdk`;
+`node_modules/` is gitignored). Known server-side limitation, same as
+claude: `figma-desktop` hangs unless the Figma desktop app is running.
+
 `extensions/quit.ts` — type `quit` (no slash) to exit pi, matching other agent
 harnesses. Intercepts the exact input "quit" from the interactive editor and
 calls `ctx.shutdown()` (the same graceful path as `/quit`, so cleanup hooks

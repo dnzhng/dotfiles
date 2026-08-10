@@ -54,8 +54,9 @@ You are in plan mode - a read-only exploration mode for safe code analysis and p
 Restrictions:
 - Built-in edit and write tools are disabled
 - Other currently active tools remain available
-- Bash is restricted to an allowlist of read-only commands
+- Bash is restricted to an allowlist of read-only commands (read-only git/gh inspection included)
 - Do NOT attempt to make changes - just describe what you would do
+- Read-only bash succeeding (git status, gh pr view, ls) does NOT mean plan mode is off. If a write command is blocked, do not retry it or work around it - finish presenting the plan; the user chooses when to execute.
 
 Before planning:
 - Read the repo's AGENTS.md / CLAUDE.md if the task touches an area you haven't worked in.
@@ -176,14 +177,26 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("todos", {
-		description: "Show current plan todo list",
-		handler: async (_args, ctx) => {
+		description: "Show current plan todo list (/todos clear to dismiss)",
+		handler: async (args, ctx) => {
+			if (args?.trim() === "clear") {
+				if (todoItems.length === 0) {
+					ctx.ui.notify("No todos to dismiss.", "info");
+					return;
+				}
+				todoItems = [];
+				executionMode = false;
+				updateStatus(ctx);
+				persistState();
+				ctx.ui.notify("Plan todos dismissed.", "info");
+				return;
+			}
 			if (todoItems.length === 0) {
 				ctx.ui.notify("No todos. Create a plan first with /plan", "info");
 				return;
 			}
 			const list = todoItems.map((item, i) => `${i + 1}. ${item.completed ? "✓" : "○"} ${item.text}`).join("\n");
-			ctx.ui.notify(`Plan Progress:\n${list}`, "info");
+			ctx.ui.notify(`Plan Progress:\n${list}\n\n(/todos clear to dismiss)`, "info");
 		},
 	});
 
@@ -305,14 +318,6 @@ Do not commit anything unless the user explicitly asks.`,
 		if (todoItems.length === 0) return;
 		persistState();
 
-		// Show plan steps and prompt for next action
-		const todoListText = todoItems.map((t, i) => `${i + 1}. ☐ ${t.text}`).join("\n");
-		const planTodoListMessage = {
-			customType: "plan-todo-list",
-			content: `**Plan Steps (${todoItems.length}):**\n\n${todoListText}`,
-			display: true,
-		};
-
 		const choice = await ctx.ui.select("Plan mode - what next?", [
 			"Execute the plan (track progress)",
 			"Stay in plan mode",
@@ -337,7 +342,6 @@ ${remainingList}
 
 Start with: ${firstTodoItem.text}
 After completing a step, run its verify check, then include a [DONE:n] tag in your response.`;
-			pi.sendMessage(planTodoListMessage, { deliverAs: "followUp" });
 			pi.sendMessage(
 				{ customType: "plan-mode-execute", content: execMessage, display: true },
 				{ triggerTurn: true, deliverAs: "followUp" },
@@ -345,8 +349,22 @@ After completing a step, run its verify check, then include a [DONE:n] tag in yo
 		} else if (choice === "Refine the plan") {
 			const refinement = await ctx.ui.editor("Refine the plan:", "");
 			if (refinement?.trim()) {
-				pi.sendMessage(planTodoListMessage, { deliverAs: "followUp" });
-				pi.sendUserMessage(refinement.trim(), { deliverAs: "followUp" });
+				// One self-contained message: a bare checklist delivered on its own reads as
+				// "approved, execute" (and followUp-triggered runs get no fresh [PLAN MODE
+				// ACTIVE] injection), so the refine instruction must carry the context.
+				pi.sendUserMessage(
+					[
+						"[PLAN MODE - REFINE THE PLAN]",
+						"The user reviewed the plan and wants changes. You are STILL in plan mode:",
+						"do not execute any steps and do not call edit/write tools - produce a revised plan only.",
+						"",
+						"Feedback:",
+						refinement.trim(),
+						"",
+						'Respond with the complete revised numbered plan under a "Plan:" header, one step per line, each ending with its verify check.',
+					].join("\n"),
+					{ deliverAs: "followUp" },
+				);
 			}
 		}
 	});

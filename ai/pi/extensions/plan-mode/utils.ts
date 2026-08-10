@@ -27,7 +27,8 @@ const DESTRUCTIVE_PATTERNS = [
 	/\bpip\s+(install|uninstall)/i,
 	/\bapt(-get)?\s+(install|remove|purge|update|upgrade)/i,
 	/\bbrew\s+(install|uninstall|upgrade)/i,
-	/\bgit\s+(add|commit|push|pull|merge|rebase|reset|checkout|branch\s+-[dD]|stash|cherry-pick|revert|tag|init|clone)/i,
+	/\bgit\s+(add|commit|push|pull|merge|rebase|reset|checkout|branch\s+-[dD]|stash(?!\s+(list|show)\b)|cherry-pick|revert|tag|init|clone)/i,
+	/\bgh\s+api\b[^|;&]*(-[fFX]\b|--field|--raw-field|--input|--method)/i,
 	/\bsudo\b/i,
 	/\bsu\b/i,
 	/\bkill\b/i,
@@ -77,8 +78,10 @@ const SAFE_PATTERNS = [
 	/^\s*top\b/,
 	/^\s*htop\b/,
 	/^\s*free\b/,
-	/^\s*git\s+(status|log|diff|show|branch|remote|config\s+--get)/i,
-	/^\s*git\s+ls-/i,
+	/^\s*git(?:\s+-C\s+\S+)*\s+(status|log|diff|show|branch|remote|config\s+--get)/,
+	/^\s*git(?:\s+-C\s+\S+)*\s+ls-/,
+	/^\s*git(?:\s+-C\s+\S+)*\s+stash\s+(list|show)\b/,
+	/^\s*gh\s+(pr\s+(view|list|diff|checks|status)\b|issue\s+(view|list|status)\b|release\s+(view|list)\b|repo\s+(view|list)\b|run\s+(list|view)\b|workflow\s+(list|view)\b|search\b|api\b|status\b|auth\s+status\b)/i,
 	/^\s*npm\s+(list|ls|view|info|search|outdated|audit)/i,
 	/^\s*yarn\s+(list|info|why|audit)/i,
 	/^\s*node\s+--version/i,
@@ -92,11 +95,24 @@ const SAFE_PATTERNS = [
 	/^\s*fd\b/,
 	/^\s*bat\b/,
 	/^\s*eza\b/,
+	/^\s*cut\b/,
+	/^\s*column\b/,
+	/^\s*tr\b/,
+	/^\s*paste\b/,
+	/^\s*nl\b/,
+	/^\s*comm\b/,
+	/^\s*strings\b/,
+	/^\s*readlink\b/,
+	/^\s*realpath\b/,
+	/^\s*basename\b/,
+	/^\s*dirname\b/,
 ];
 
 export function isSafeCommand(command: string): boolean {
-	const isDestructive = DESTRUCTIVE_PATTERNS.some((p) => p.test(command));
-	const isSafe = SAFE_PATTERNS.some((p) => p.test(command));
+	// Benign redirects (stderr to stdout, anything to /dev/null) write no files — strip before matching
+	const sanitized = command.replace(/[12&]?>{1,2}\s*(?:&[12]|\/dev\/null)\b/g, "");
+	const isDestructive = DESTRUCTIVE_PATTERNS.some((p) => p.test(sanitized));
+	const isSafe = SAFE_PATTERNS.some((p) => p.test(sanitized));
 	return !isDestructive && isSafe;
 }
 

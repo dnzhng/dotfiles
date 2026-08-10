@@ -120,6 +120,39 @@ tmux set -pu -t "$TMUX_PANE" pane-colours
 printf '\033]104\007\033]110\007\033]111\007\033]112\007'
 ```
 
+`extensions/plan-mode/` — read-only exploration mode, toggled with `/plan`,
+`Ctrl+Alt+P`, or the `--plan` startup flag. Enabling swaps the active tool set
+to read-only (`edit`/`write` removed, other active tools kept, restored on
+exit) and hooks `tool_call` to block bash outside a read-only allowlist
+(utils.ts: a destructive-pattern denylist and a safe-pattern allowlist, both
+must pass). While enabled, a `[PLAN MODE ACTIVE]` prompt is injected every
+turn — and filtered back out of context once disabled — steering the model to
+a numbered `Plan:` list with a verify check per step. On `agent_end` the steps
+are extracted and a select offers Execute / Stay / Refine: Execute restores
+full tools and tracks completion via `[DONE:n]` markers in assistant replies
+(footer `📋 n/m` status + strikethrough widget, "Plan Complete" summary when
+all steps land). State (enabled/todos/executing/pre-plan tool set) persists
+via `appendEntry`, so resume restores a mid-execution plan, re-scanning only
+messages after the last execute marker for `[DONE:n]` tags.
+
+`extensions/memory.ts` — injects the cwd project's long-term memory index
+(`MEMORY.md`) into the system prompt, mirroring Claude Code's per-project
+auto-memory. Store: `~/.pi/agent/memory` (install.sh symlinks it to
+`private/ai/shared/memory/agent`; `$PI_MEMORY_STORE` overrides). cwd →
+project matching mirrors ai/claude/install.sh's slug-suffix rule (longest
+name wins) plus an interior-segment fallback so graft worktrees
+(`~/grafts/carrot/<slug>`) resolve to their repo; no match → nothing
+injected (zero token cost). Only the index is ever injected — the global
+section is already inlined by ai/claude/install.sh, and linked memory files
+are read on demand — so per-session cost is the index alone. The block is
+appended to the system prompt on every `before_agent_start` (stateless,
+survives compaction, rides prompt caching) and re-read when MEMORY.md's
+mtime changes, so memories written mid-session appear without a restart.
+Subagent sessions load ambient extensions: fresh-context children get the
+index for their own cwd (cross-repo recall); fork-context children inherit
+the parent's system prompt instead — use fresh context when spawning a
+child into another repo. `/memory` shows the current match.
+
 ## Settings
 
 `settings.base.json` — portable preferences, merged into

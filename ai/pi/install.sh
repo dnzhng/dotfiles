@@ -29,8 +29,8 @@ for theme in "$SCRIPT_DIR/themes"/*.json; do
 done
 
 # Symlink extensions into ~/.pi/agent/extensions, one symlink per extension.
-# A destination that exists and is NOT one of our symlinks (e.g. plan-mode,
-# dropped in directly) is left alone.
+# A destination that exists and is NOT one of our symlinks (e.g. an extension
+# dropped in directly, not yet migrated) is left alone.
 echo "Symlinking pi extensions..."
 mkdir -p "$PI_DIR/extensions"
 for ext in "$SCRIPT_DIR/extensions"/*; do
@@ -50,6 +50,29 @@ for ext in "$SCRIPT_DIR/extensions"/*; do
     ln -s "$ext" "$dest"
     echo "  Linked $name"
 done
+
+# Symlink the shared agent-memory store into ~/.pi/agent/memory for the
+# memory extension (private/ai/shared/memory/agent — one subdir per project,
+# MEMORY.md index per subdir). $PI_MEMORY_STORE overrides at runtime.
+echo "Symlinking agent memory store..."
+MEMORY_SRC="$(cd "$SCRIPT_DIR/../.." && pwd)/private/ai/shared/memory/agent"
+dest="$PI_DIR/memory"
+if [ -d "$MEMORY_SRC" ]; then
+    if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$MEMORY_SRC" ]; then
+        echo "  Already linked memory"
+    elif [ -L "$dest" ]; then
+        rm -f "$dest"
+        ln -s "$MEMORY_SRC" "$dest"
+        echo "  Linked memory"
+    elif [ -e "$dest" ]; then
+        echo "  Skipped memory (exists, not a dotfiles symlink — leaving it alone)"
+    else
+        ln -s "$MEMORY_SRC" "$dest"
+        echo "  Linked memory"
+    fi
+else
+    echo "  Skipped memory (no private memory store found)"
+fi
 
 # Merge settings: layer the dotfiles base over the existing settings.json.
 # Never overwrite the whole file — pi rewrites it at runtime with

@@ -106,7 +106,12 @@ also what makes pi opaque):
   the pane with explicit colors (opaque in WezTerm) and resolves palette
   indexes to ocean RGB on the wire. Nothing terminal-wide is emitted; on
   start it also emits OSC 104/110/111/112 resets to clean up any swap leaked
-  by the non-tmux path or older versions. All pane options are unset on quit.
+  by the non-tmux path or older versions. All pane options are unset on quit,
+  but only by the owning pi: since `$TMUX_PANE` is inherited by any pi spawned
+  from the pane (agent `pi -p` calls, manual nesting), quit-time clearing is
+  guarded by an `@ocean-terminal-pid` marker — a nested pi leaves a living
+  owner's styling alone, and a stale marker (owner dead, or its pid recycled
+  to a non-pi process such as the pane's own shell) is retaken on next start.
 - **Outside tmux**: terminal-wide OSC palette swap (the vimrc block) —
   colors only, no opacity automation (pi stays translucent there; the
   per-pane fill is a tmux-only trick).

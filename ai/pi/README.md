@@ -81,6 +81,19 @@ transparent reconnect on a failed call. `/mcp` posts a TUI-only status table
 `node_modules/` is gitignored). Known server-side limitation, same as
 claude: `figma-desktop` hangs unless the Figma desktop app is running.
 
+`extensions/dotfiles.ts` — startup out-of-date check + `/sync` command for
+the dotfiles repo. Repo root: `$DOTFILES_DIR`, else the first of
+`~/Code/dotfiles`, `~/dotfiles` with a `.git` (same env-override-then-convention
+pattern as `$PI_AGENT_STORE`). On session_start (skipped for resume/fork) it
+fetches both repos (main + `private/`, best-effort, 15s timeout so offline
+startup never blocks), then warns once in chat when anything is actionable —
+uncommitted changes, unpushed or behind commits, or an installed AGENTS.md
+destination that no longer byte-matches the merged base+private build (i.e. a
+Gohan overwrite) — and a select offers "Run sync now". Both that and `/sync`
+run `sync.sh` at the repo root (commit → pull --rebase → push → re-run every
+install.sh) async and notify on completion. See the root Readme's "Syncing
+across machines".
+
 `extensions/quit.ts` — type `quit` (no slash) to exit pi, matching other agent
 harnesses. Intercepts the exact input "quit" from the interactive editor and
 calls `ctx.shutdown()` (the same graceful path as `/quit`, so cleanup hooks

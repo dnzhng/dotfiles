@@ -1,0 +1,6 @@
+# Dotfiles sync: commit + push local changes, pull remote ones, reinstall.
+# Auto-sourced by fish/config.fish. Self-locating via status filename — no
+# hardcoded repo path ($DOTFILES_DIR env override is honored by sync.sh).
+function dotfiles-sync -d "Commit, push, pull, and reinstall dotfiles"
+  bash (dirname (dirname (status filename)))/sync.sh $argv
+end

@@ -53,7 +53,8 @@ done
 
 # Symlink the shared agent-memory store into ~/.pi/agent/memory for the
 # memory extension (private/ai/shared/memory/agent — one subdir per project,
-# MEMORY.md index per subdir). $PI_MEMORY_STORE overrides at runtime.
+# MEMORY.md index per subdir). $PI_AGENT_STORE overrides at runtime
+# (resolved as <root>/memory/agent).
 echo "Symlinking agent memory store..."
 MEMORY_SRC="$(cd "$SCRIPT_DIR/../.." && pwd)/private/ai/shared/memory/agent"
 dest="$PI_DIR/memory"
@@ -72,6 +73,25 @@ if [ -d "$MEMORY_SRC" ]; then
     fi
 else
     echo "  Skipped memory (no private memory store found)"
+fi
+
+# Create the shared agent-plans dir inside the memory store for the plan-mode
+# extension (private/ai/shared/memory/agent/.plans — one flat .md per plan or
+# plan revision; dot-prefix sorts it above the per-project memory folders).
+# Reachable in pi at ~/.pi/agent/memory/.plans via the memory symlink above —
+# no separate symlink needed. $PI_AGENT_STORE overrides at runtime (resolved
+# as <root>/memory/agent/.plans).
+echo "Ensuring agent plans dir..."
+if [ -d "$MEMORY_SRC" ]; then
+    mkdir -p "$MEMORY_SRC/.plans"
+    echo "  Ensured plans dir"
+else
+    echo "  Skipped plans (no private memory store found)"
+fi
+# Remove the pre-move ~/.pi/agent/plans symlink if it's still around.
+if [ -L "$PI_DIR/plans" ]; then
+    rm -f "$PI_DIR/plans"
+    echo "  Removed stale plans symlink"
 fi
 
 # Merge settings: layer the dotfiles base over the existing settings.json.

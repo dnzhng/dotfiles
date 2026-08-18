@@ -138,12 +138,21 @@ full tools and tracks completion via `[DONE:n]` markers in assistant replies
 (footer `📋 n/m` status + strikethrough widget, "Plan Complete" summary when
 all steps land). State (enabled/todos/executing/pre-plan tool set) persists
 via `appendEntry`, so resume restores a mid-execution plan, re-scanning only
-messages after the last execute marker for `[DONE:n]` tags.
+messages after the last execute marker for `[DONE:n]` tags. Each
+produced/refined plan is also saved verbatim (frontmatter: `created` + `cwd`)
+as a timestamped `YYYYMMDD-HHMMSS-<slug>.md` to the shared plans store —
+`~/.pi/agent/memory/.plans` — inside the install.sh memory-store symlink
+(`private/ai/shared/memory/agent/.plans`; the dot-prefix sorts it above the
+per-project memory folders); `$PI_AGENT_STORE` overrides, resolved as `<root>/memory/agent/.plans`
+— and the saved path
+is referenced during execution, so plans stay referenceable across sessions
+and harnesses without living in context.
 
 `extensions/memory.ts` — injects the cwd project's long-term memory index
 (`MEMORY.md`) into the system prompt, mirroring Claude Code's per-project
 auto-memory. Store: `~/.pi/agent/memory` (install.sh symlinks it to
-`private/ai/shared/memory/agent`; `$PI_MEMORY_STORE` overrides). cwd →
+`private/ai/shared/memory/agent`; `$PI_AGENT_STORE` overrides, resolved as
+`<root>/memory/agent`). cwd →
 project matching mirrors ai/claude/install.sh's slug-suffix rule (longest
 name wins) plus an interior-segment fallback so graft worktrees
 (`~/grafts/carrot/<slug>`) resolve to their repo; no match → nothing

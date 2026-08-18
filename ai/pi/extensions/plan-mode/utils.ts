@@ -182,3 +182,28 @@ export function markCompletedSteps(text: string, items: TodoItem[]): number {
 	}
 	return doneSteps.length;
 }
+
+/** Kebab-case slug from free text (first 6 words, <=50 chars); "plan" if nothing usable. */
+export function slugify(text: string): string {
+	const slug = text
+		.toLowerCase()
+		.replace(/['"]/g, "")
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "")
+		.split("-")
+		.filter(Boolean)
+		.slice(0, 6)
+		.join("-")
+		.slice(0, 50)
+		.replace(/-+$/g, "");
+	return slug || "plan";
+}
+
+/** Sortable, collision-resistant plan filename: YYYYMMDD-HHMMSS-<slug>.md (local time). */
+export function planFileName(title: string, date: Date): string {
+	const pad = (n: number): string => String(n).padStart(2, "0");
+	const stamp =
+		`${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}` +
+		`-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+	return `${stamp}-${slugify(title)}.md`;
+}

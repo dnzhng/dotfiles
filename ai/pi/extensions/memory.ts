@@ -3,8 +3,9 @@
  * into the system prompt, mirroring Claude Code's per-project auto-memory.
  *
  * Store: ~/.pi/agent/memory (symlinked to the dotfiles store at
- * private/ai/shared/memory/agent by ai/pi/install.sh; $PI_MEMORY_STORE
- * overrides). One subdir per project, each a Claude Code auto-memory dir:
+ * private/ai/shared/memory/agent by ai/pi/install.sh; $PI_AGENT_STORE
+ * points at the shared store root, resolved as <root>/memory/agent).
+ * One subdir per project, each a Claude Code auto-memory dir:
  * a MEMORY.md index (one line per memory, global section inlined) plus one
  * file per memory. Only the index is ever injected — linked files are read
  * on demand — so cost per session is the index alone.
@@ -31,9 +32,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-function storeDir(): string | undefined {
-	const env = process.env.PI_MEMORY_STORE;
-	if (env && existsSync(env)) return env;
+export function storeDir(): string | undefined {
+	const shared = process.env.PI_AGENT_STORE;
+	if (shared) {
+		const store = join(shared, "memory", "agent");
+		if (existsSync(store)) return store;
+	}
 	const conventional = join(homedir(), ".pi/agent/memory");
 	if (existsSync(conventional)) return conventional;
 	return undefined;
@@ -147,7 +151,7 @@ export default function (pi: ExtensionAPI) {
 		handler: async (_args, ctx) => {
 			const store = storeDir();
 			if (!store) {
-				ctx.ui.notify("Memory: no store found (expected ~/.pi/agent/memory or $PI_MEMORY_STORE)", "warning");
+				ctx.ui.notify("Memory: no store found (expected ~/.pi/agent/memory or $PI_AGENT_STORE/memory/agent)", "warning");
 				return;
 			}
 			const project = matchProject(ctx.cwd, listProjects(store));

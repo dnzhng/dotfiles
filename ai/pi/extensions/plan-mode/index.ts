@@ -10,20 +10,41 @@
  * - Extracts numbered plan steps from "Plan:" sections
  * - [DONE:n] markers to complete steps during execution
  * - Progress tracking widget during execution
+ * - Interactive questionnaire tool: ask the user clarifying questions mid-plan
+ *   (options + free-form answers) so context lands before the final plan
+ * - Saves each produced/refined plan as a timestamped .md to the shared plans store
+ *
+ * Plans are saved as timestamped markdown files (one per produced/refined
+ * plan) to the shared plans store: ~/.pi/agent/memory/.plans — inside the
+ * memory-store symlink (private/ai/shared/memory/agent/.plans; the dot-prefix
+ * sorts it above the per-project memory folders); $PI_AGENT_STORE points at
+ * the shared store root, resolved as <root>/memory/agent/.plans. The extension writes these
+ * itself (plan-mode tool restrictions only gate the agent's tools), so plans
+ * stay referenceable across sessions and harnesses without living in context.
  *
  * Planning style follows the user's Working Principles (~/.pi/agent/AGENTS.md):
  * state assumptions, surface interpretations, simplicity first, surgical
  * changes, and a verify check per plan step.
  */
 
+import { existsSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Key } from "@earendil-works/pi-tui";
-import { extractTodoItems, isSafeCommand, markCompletedSteps, type TodoItem } from "./utils.ts";
+import { registerQuestionnaireTool } from "./questionnaire.ts";
+import {
+	extractTodoItems,
+	isSafeCommand,
+	markCompletedSteps,
+	planFileName,
+	type TodoItem,
+} from "./utils.ts";
 
 // Tools
-const PLAN_MODE_TOOLS = ["read", "bash", "grep", "find", "ls"];
+const PLAN_MODE_TOOLS = ["read", "bash", "grep", "find", "ls", "questionnaire"];
 const NORMAL_MODE_TOOLS = ["read", "bash", "edit", "write"];
 const PLAN_MODE_DISABLED_TOOLS = new Set<string>(["edit", "write"]);
 const PLAN_MANAGED_TOOLS = new Set<string>([...PLAN_MODE_TOOLS, ...NORMAL_MODE_TOOLS]);
@@ -33,6 +54,7 @@ interface PlanModeState {
 	todos?: TodoItem[];
 	executing?: boolean;
 	toolsBeforePlanMode?: string[];
+	lastPlanFile?: string;
 }
 
 // Type guard for assistant messages
@@ -48,6 +70,56 @@ function getTextContent(message: AssistantMessage): string {
 		.join("\n");
 }
 
+// Extract text content from a user message (string or block content)
+function getUserText(message: AgentMessage): string | undefined {
+	if (message.role !== "user") return undefined;
+	const content = (message as { content?: unknown }).content;
+	if (typeof content === "string") return content;
+	if (Array.isArray(content)) {
+		return content
+			.filter((block): block is TextContent => (block as { type?: string }).type === "text")
+			.map((block) => block.text)
+			.join("\n");
+	}
+	return undefined;
+}
+
+/** Plans store: $PI_AGENT_STORE/memory/agent/.plans, else ~/.pi/agent/memory/.plans; undefined if neither exists. */
+function plansDir(): string | undefined {
+	const shared = process.env.PI_AGENT_STORE;
+	if (shared) {
+		const dir = join(shared, "memory", "agent", ".plans");
+		if (existsSync(dir)) return dir;
+	}
+	const conventional = join(homedir(), ".pi/agent/memory/.plans");
+	if (existsSync(conventional)) return conventional;
+	return undefined;
+}
+
+/** Save the plan as a timestamped markdown file; returns the path, or undefined when unsaved. */
+function writePlanFile(
+	planText: string,
+	slugSource: string,
+	cwd: string,
+	ctx: ExtensionContext,
+): string | undefined {
+	const dir = plansDir();
+	if (!dir) {
+		ctx.ui.notify("Plan not saved: no plans store (run ai/pi/install.sh or set $PI_AGENT_STORE)", "warning");
+		return undefined;
+	}
+	const path = join(dir, planFileName(slugSource, new Date()));
+	const content = `---\ncreated: ${new Date().toISOString()}\ncwd: ${cwd}\n---\n\n${planText.trim()}\n`;
+	try {
+		writeFileSync(path, content);
+	} catch (err) {
+		ctx.ui.notify(`Plan not saved: ${err}`, "warning");
+		return undefined;
+	}
+	ctx.ui.notify(`Plan saved: ${path.replace(homedir(), "~")}`, "info");
+	return path;
+}
+
 const PLAN_MODE_PROMPT = `[PLAN MODE ACTIVE]
 You are in plan mode - a read-only exploration mode for safe code analysis and planning.
 
@@ -61,8 +133,12 @@ Restrictions:
 Before planning:
 - Read the repo's AGENTS.md / CLAUDE.md if the task touches an area you haven't worked in.
 - State assumptions explicitly. If multiple interpretations exist, surface them — do not silently pick one.
-- If genuinely ambiguous, ask clarifying questions in your response instead of guessing.
 - Explore enough of the codebase that every step names real files/symbols, not placeholders.
+
+Asking the user (interactive planning):
+- Use the questionnaire tool when intent, scope, or approach is genuinely ambiguous, or a decision is worth confirming before the plan is final. Ask EARLY — after initial exploration, before presenting the plan — so answers shape the plan instead of causing refine cycles.
+- Batch related questions into ONE questionnaire call (up to 4), each with 2-4 concrete options, recommended option first. The user can always pick "Type something" to answer free-form.
+- If the user cancels the questionnaire, do not re-ask the same questions — proceed with stated assumptions. If the tool errors (no interactive UI), ask in plain text in your response instead.
 
 Planning style (user preferences):
 - Simplicity first: minimum changes that solve the problem; no speculative features, abstractions, or configurability.
@@ -82,6 +158,9 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	let executionMode = false;
 	let todoItems: TodoItem[] = [];
 	let toolsBeforePlanMode: string[] | undefined;
+	let lastPlanFile: string | undefined;
+
+	registerQuestionnaireTool(pi);
 
 	pi.registerFlag("plan", {
 		description: "Start in plan mode (read-only exploration)",
@@ -152,6 +231,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			todos: todoItems,
 			executing: executionMode,
 			toolsBeforePlanMode,
+			lastPlanFile,
 		});
 	}
 
@@ -159,6 +239,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		planModeEnabled = !planModeEnabled;
 		executionMode = false;
 		todoItems = [];
+		lastPlanFile = undefined;
 
 		if (planModeEnabled) {
 			enablePlanModeTools();
@@ -257,6 +338,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		if (executionMode && todoItems.length > 0) {
 			const remaining = todoItems.filter((t) => !t.completed);
 			const todoList = remaining.map((t) => `${t.step}. ${t.text}`).join("\n");
+			const planFileLine = lastPlanFile ? `\nFull plan file: ${lastPlanFile}` : "";
 			return {
 				message: {
 					customType: "plan-execution-context",
@@ -267,7 +349,7 @@ ${todoList}
 
 Execute each step in order. Keep changes surgical — only what the step requires.
 After completing a step, run its verify check, then include a [DONE:n] tag in your response.
-Do not commit anything unless the user explicitly asks.`,
+Do not commit anything unless the user explicitly asks.${planFileLine}`,
 					display: false,
 				},
 			};
@@ -309,9 +391,14 @@ Do not commit anything unless the user explicitly asks.`,
 		// Extract todos from last assistant message
 		const lastAssistant = [...event.messages].reverse().find(isAssistantMessage);
 		if (lastAssistant) {
-			const extracted = extractTodoItems(getTextContent(lastAssistant));
+			const planText = getTextContent(lastAssistant);
+			const extracted = extractTodoItems(planText);
 			if (extracted.length > 0) {
 				todoItems = extracted;
+				// Save the plan to the shared store; slug from the triggering request
+				const lastUser = [...event.messages].reverse().find((m) => m.role === "user");
+				const slugSource = (lastUser && getUserText(lastUser)) || extracted[0]?.text || "plan";
+				lastPlanFile = writePlanFile(planText, slugSource, ctx.cwd, ctx) ?? lastPlanFile;
 			}
 		}
 
@@ -335,13 +422,14 @@ Do not commit anything unless the user explicitly asks.`,
 			persistState();
 
 			const remainingList = todoItems.map((t) => `${t.step}. ${t.text}`).join("\n");
+			const planFileLine = lastPlanFile ? `\nFull plan file: ${lastPlanFile}` : "";
 			const execMessage = `Execute the plan.
 
 Remaining steps:
 ${remainingList}
 
 Start with: ${firstTodoItem.text}
-After completing a step, run its verify check, then include a [DONE:n] tag in your response.`;
+After completing a step, run its verify check, then include a [DONE:n] tag in your response.${planFileLine}`;
 			pi.sendMessage(
 				{ customType: "plan-mode-execute", content: execMessage, display: true },
 				{ triggerTurn: true, deliverAs: "followUp" },
@@ -387,6 +475,7 @@ After completing a step, run its verify check, then include a [DONE:n] tag in yo
 			todoItems = planModeEntry.data.todos ?? todoItems;
 			executionMode = planModeEntry.data.executing ?? executionMode;
 			toolsBeforePlanMode = planModeEntry.data.toolsBeforePlanMode ?? toolsBeforePlanMode;
+			lastPlanFile = planModeEntry.data.lastPlanFile ?? lastPlanFile;
 		}
 
 		// On resume: re-scan messages to rebuild completion state

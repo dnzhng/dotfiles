@@ -10,7 +10,6 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${DOTFILES_DIR:-$SCRIPT_DIR}"
-HOST="$(hostname -s 2>/dev/null || hostname)"
 
 # commit -> pull --rebase -> push one repo ($1 = path, $2 = label).
 sync_repo() {
@@ -26,7 +25,7 @@ sync_repo() {
 
     if [ -n "$(git -C "$dir" status --porcelain)" ]; then
         git -C "$dir" add -A
-        git -C "$dir" commit -m "chore: sync dotfiles from $HOST"
+        git -C "$dir" commit -m "chore: sync dotfiles"
         echo "  Committed local changes"
     else
         echo "  No local changes"

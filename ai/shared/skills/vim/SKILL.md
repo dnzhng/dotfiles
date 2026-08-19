@@ -9,18 +9,23 @@ Open vim in a tmux split.
 2. Build the vim command from the skill arguments:
    - No argument: `vim .`
    - A file path (relative or absolute): `vim <path>` — shell-quote the path
-     (e.g. `vim 'my file.txt'`). Relative paths resolve against the pane's
-     current directory, so pass them through as given.
+     (e.g. `vim 'my file.txt'`). Relative paths resolve against `$PWD`,
+     so pass them through as given.
+
+   Do NOT use tmux's `#{pane_current_path}` for the split's working
+   directory — it expands against whichever pane is active when tmux runs
+   the command, so if the user has switched windows in the meantime, vim
+   opens in the wrong directory. Use the shell's `$PWD` instead.
 3. Run it in the split, e.g. for no argument:
 
 ```bash
-tmux split-window -t "$TMUX_PANE" -b -p 85 -c "#{pane_current_path}" vim .
+tmux split-window -t "$TMUX_PANE" -b -p 85 -c "$PWD" vim .
 ```
 
 or with a file:
 
 ```bash
-tmux split-window -t "$TMUX_PANE" -b -p 85 -c "#{pane_current_path}" vim path/to/file
+tmux split-window -t "$TMUX_PANE" -b -p 85 -c "$PWD" vim path/to/file
 ```
 
 This opens vim in a new pane taking 85% of the window above the current

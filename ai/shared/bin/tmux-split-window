@@ -1,0 +1,68 @@
+#!/bin/bash
+# tmux-split-window <vim|lazygit> [path] — open a tool in an 85% tmux split
+# above the invoking pane. Named after the tmux subcommand it wraps.
+#
+# Single source of truth for the split behavior, replacing the old vim/lazygit
+# skills (which cost an LLM round trip to read the skill file before running
+# one tmux command). Invoked by pi's /vim and /lazygit commands
+# (ai/pi/extensions/tmux-split-window.ts) and directly callable from any
+# other harness or shell — e.g. `! tmux-split-window lazygit` in Claude Code, or a
+# shell alias. Symlinked into ~/.local/bin by ai/shared/install.sh.
+#
+#   vim [file]     — no arg: `vim .`; file arg: `vim <path>` (relative paths
+#                    resolve against the caller's cwd)
+#   lazygit [dir]  — no arg: caller's cwd; dir arg: that repo dir (relative
+#                    paths resolve against the caller's cwd)
+#
+# The split is pinned to $TMUX_PANE (the pane that ran the command) so it
+# can't land in whatever window happens to be active. Never use tmux's
+# #{pane_current_path} for the split directory — it expands against the
+# active pane at execution time, so it opens the wrong directory if the user
+# switched windows in the meantime.
+set -euo pipefail
+
+usage() {
+    echo "usage: tmux-split-window <vim|lazygit> [path]" >&2
+    exit 64
+}
+
+[ $# -ge 1 ] && [ $# -le 2 ] || usage
+tool="$1"
+arg="${2:-}"
+
+if [ -z "${TMUX:-}" ] || [ -z "${TMUX_PANE:-}" ]; then
+    echo "tmux-split-window: not inside tmux" >&2
+    exit 1
+fi
+
+split() {
+    # split <dir> <cmd...>
+    local dir="$1"
+    shift
+    tmux split-window -t "$TMUX_PANE" -b -p 85 -c "$dir" "$@"
+}
+
+case "$tool" in
+    vim)
+        if [ -n "$arg" ]; then
+            split "$PWD" vim "$arg"
+        else
+            split "$PWD" vim .
+        fi
+        ;;
+    lazygit)
+        dir="$PWD"
+        if [ -n "$arg" ]; then
+            case "$arg" in
+                /*) dir="$arg" ;;
+                *)  dir="$PWD/$arg" ;;
+            esac
+        fi
+        split "$dir" lazygit
+        ;;
+    *)
+        usage
+        ;;
+esac
+
+echo "tmux-split-window: opened $tool${arg:+ ($arg)} in an 85% split above"

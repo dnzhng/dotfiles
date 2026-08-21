@@ -78,6 +78,20 @@ for script in ai/shared ai/claude ai/pi tmux vim lazygit wezterm; do
     fi
 done
 
+# Update pi packages (npm:pi-subagents, etc.). pi skips already-current
+# packages, so this is a no-op when nothing changed. --no-approve keeps
+# project-local settings from whatever cwd sync was invoked in out of the
+# update (pi update never prompts, per pi docs).
+echo "== Updating pi extensions"
+if command -v pi > /dev/null 2>&1; then
+    if ! pi update --extensions --no-approve; then
+        FAILED+=("pi-update")
+        echo "  Warning: pi update --extensions failed — continuing" >&2
+    fi
+else
+    echo "  pi not installed — skipping"
+fi
+
 # Verify the merged AGENTS.md actually landed (Gohan overwrite re-asserted).
 echo "== Verifying AGENTS.md"
 EXPECTED="$(mktemp)"

@@ -113,14 +113,14 @@ function fetchRepo(dir: string): Promise<void> {
 	});
 }
 
-function runSync(root: string, ctx: ExtensionContext): void {
-	ctx.ui.notify("Syncing dotfiles…", "info");
-	execFile("bash", [join(root, "sync.sh")], { timeout: 120_000 }, (error, _stdout, stderr) => {
+function runSync(root: string, ctx: ExtensionContext, noPush = false): void {
+	ctx.ui.notify(noPush ? "Pulling & reinstalling dotfiles (no push)…" : "Syncing dotfiles…", "info");
+	execFile("bash", [join(root, "sync.sh"), ...(noPush ? ["--no-push"] : [])], { timeout: 120_000 }, (error, _stdout, stderr) => {
 		if (error) {
 			const tail = (stderr || "sync.sh failed").trim().split("\n").slice(-5).join("\n");
 			ctx.ui.notify(`Dotfiles sync failed:\n${tail}`, "error");
 		} else {
-			ctx.ui.notify("Dotfiles synced and reinstalled", "info");
+			ctx.ui.notify(noPush ? "Dotfiles pulled & reinstalled (no push)" : "Dotfiles synced and reinstalled", "info");
 		}
 	});
 }
@@ -139,16 +139,26 @@ export default function (pi: ExtensionAPI) {
 		ctx.ui.notify(`Dotfiles out of date: ${issues.join("; ")} — run dotfiles-sync or /sync`, "warning");
 		promptOpen = true;
 		try {
-			const choice = await ctx.ui.select("Dotfiles out of date — run sync?", ["Run sync now", "Later"]);
+			const choice = await ctx.ui.select("Dotfiles out of date — run sync?", [
+				"Run sync now",
+				"Pull & reinstall (no push)",
+				"Later",
+			]);
 			if (choice === "Run sync now") runSync(root, ctx);
+			else if (choice === "Pull & reinstall (no push)") runSync(root, ctx, true);
 		} finally {
 			promptOpen = false;
 		}
 	});
 
 	pi.registerCommand("sync", {
-		description: "Sync dotfiles: commit, push, pull, then re-run install scripts (sync.sh)",
-		handler: async (_args, ctx) => {
+		description: "Sync dotfiles: commit, push, pull, then re-run install scripts (sync.sh). Pass `local` to pull & reinstall without pushing (keeps private/ local).",
+		getArgumentCompletions: (prefix: string) => {
+			const items = [{ value: "local", label: "local", description: "Pull & reinstall, no push" }];
+			const filtered = items.filter((i) => i.value.startsWith(prefix));
+			return filtered.length > 0 ? filtered : null;
+		},
+		handler: async (args, ctx) => {
 			const root = dotfilesDir();
 			if (!root) {
 				ctx.ui.notify(
@@ -157,7 +167,8 @@ export default function (pi: ExtensionAPI) {
 				);
 				return;
 			}
-			runSync(root, ctx);
+			const noPush = args.trim().toLowerCase() === "local" || args.includes("--no-push");
+			runSync(root, ctx, noPush);
 		},
 	});
 }

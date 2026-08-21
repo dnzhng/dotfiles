@@ -7,9 +7,21 @@ set -e
 #
 # Invoked directly, via the fish `dotfiles-sync` function, or pi's `/sync`.
 # $DOTFILES_DIR overrides the repo root; default is this script's own dir.
+#
+# --no-push: commit + pull --rebase on both repos and reinstall, but skip the
+# push step. Use when you have local private/ changes you don't want to ship
+# upstream yet still want AGENTS.md (and other installs) refreshed locally.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${DOTFILES_DIR:-$SCRIPT_DIR}"
+
+PUSH=1
+for arg in "$@"; do
+	case "$arg" in
+		--no-push) PUSH="" ;;
+		*) echo "Unknown arg: $arg" >&2 ;;
+	esac
+done
 
 # commit -> pull --rebase -> push one repo ($1 = path, $2 = label).
 sync_repo() {
@@ -36,7 +48,9 @@ sync_repo() {
             echo "Error: rebase conflict in $label — resolve it, then re-run sync" >&2
             exit 1
         fi
-        if [ -n "$(git -C "$dir" rev-list '@{u}..HEAD')" ]; then
+        if [ -z "$PUSH" ]; then
+            echo "  Push skipped (--no-push) — local commits stay local"
+        elif [ -n "$(git -C "$dir" rev-list '@{u}..HEAD')" ]; then
             git -C "$dir" push
             echo "  Pushed"
         else

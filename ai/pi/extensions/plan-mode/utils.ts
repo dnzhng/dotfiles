@@ -147,7 +147,11 @@ export function extractTodoItems(message: string): TodoItem[] {
 	const headerMatch = message.match(/\*{0,2}Plan:\*{0,2}\s*\n/i);
 	if (!headerMatch) return items;
 
-	const planSection = message.slice(message.indexOf(headerMatch[0]) + headerMatch[0].length);
+	let planSection = message.slice(message.indexOf(headerMatch[0]) + headerMatch[0].length);
+	// The plan section ends at the next markdown header or rule — numbered lists in later
+	// sections (## Verification, etc.) are not plan steps.
+	const sectionEnd = planSection.search(/^#{1,6}\s|^[ \t]*-{3,}[ \t]*$/m);
+	if (sectionEnd >= 0) planSection = planSection.slice(0, sectionEnd);
 	const numberedPattern = /^\s*(\d+)[.)]\s+\*{0,2}([^*\n]+)/gm;
 
 	for (const match of planSection.matchAll(numberedPattern)) {
@@ -181,6 +185,16 @@ export function markCompletedSteps(text: string, items: TodoItem[]): number {
 		if (item) item.completed = true;
 	}
 	return doneSteps.length;
+}
+
+/**
+ * Extract the plan title from a "Title: ..." line (tolerates markdown bold); undefined if absent.
+ * The title names the actual work, so it's a better filename slug than the raw user request.
+ */
+export function extractPlanTitle(message: string): string | undefined {
+	const match = message.match(/^\s*(?:\*\*)?Title:(?:\*\*)?\s+(.+)$/im);
+	const title = match?.[1]?.replace(/\*+$/, "").trim();
+	return title ? title : undefined;
 }
 
 /** Kebab-case slug from free text (first 6 words, <=50 chars); "plan" if nothing usable. */

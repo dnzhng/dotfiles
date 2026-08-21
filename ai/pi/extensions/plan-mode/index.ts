@@ -12,10 +12,19 @@
  * - Progress tracking widget during execution
  * - Interactive questionnaire tool: ask the user clarifying questions mid-plan
  *   (options + free-form answers) so context lands before the final plan
- * - Saves each produced/refined plan as a timestamped .md to the shared plans store
+ * - Structured plan format (Title / Context / Approach / Multi-Agent Team Structure / Plan /
+ *   Verification / Files touched) with subagent orchestration guidance adapted from the
+ *   user's Claude planning setup (ai/claude/CLAUDE.md)
+ * - Saves each plan as a timestamped .md to the shared plans store, named from the plan's
+ *   Title line (the actual work, not the request wording); one file per plan-mode session —
+ *   revisions update it in place
+ * - "Execute in a fresh session" (menu option / /plan-exec-fresh): clears context and executes
+ *   off the plan file alone — seeds execution state into a replacement session via
+ *   ctx.newSession, which is only available on command contexts (agent_end queues the
+ *   command as a follow-up user message)
  *
- * Plans are saved as timestamped markdown files (one per produced/refined
- * plan) to the shared plans store: ~/.pi/agent/memory/.plans — inside the
+ * Plans are saved as timestamped markdown files (one per plan-mode session; revisions
+ * overwrite the session's file) to the shared plans store: ~/.pi/agent/memory/.plans — inside the
  * memory-store symlink (private/ai/shared/memory/agent/.plans; the dot-prefix
  * sorts it above the per-project memory folders); $PI_AGENT_STORE points at
  * the shared store root, resolved as <root>/memory/agent/.plans. The extension writes these
@@ -36,6 +45,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Key } from "@earendil-works/pi-tui";
 import { registerQuestionnaireTool } from "./questionnaire.ts";
 import {
+	extractPlanTitle,
 	extractTodoItems,
 	isSafeCommand,
 	markCompletedSteps,
@@ -44,10 +54,12 @@ import {
 } from "./utils.ts";
 
 // Tools
-const PLAN_MODE_TOOLS = ["read", "bash", "grep", "find", "ls", "questionnaire"];
+const PLAN_MODE_TOOLS = ["read", "bash", "grep", "find", "ls", "questionnaire", "subagent"];
 const NORMAL_MODE_TOOLS = ["read", "bash", "edit", "write"];
 const PLAN_MODE_DISABLED_TOOLS = new Set<string>(["edit", "write"]);
 const PLAN_MANAGED_TOOLS = new Set<string>([...PLAN_MODE_TOOLS, ...NORMAL_MODE_TOOLS]);
+// Prefix of the user message sent by the "Refine the plan" flow — signals an in-place plan update
+const REFINE_MARKER = "[PLAN MODE - REFINE THE PLAN]";
 
 interface PlanModeState {
 	enabled: boolean;
@@ -96,19 +108,23 @@ function plansDir(): string | undefined {
 	return undefined;
 }
 
-/** Save the plan as a timestamped markdown file; returns the path, or undefined when unsaved. */
+/**
+ * Save the plan as a timestamped markdown file; with existingPath (a refinement), overwrite
+ * that file instead of creating a new one. Returns the path, or undefined when unsaved.
+ */
 function writePlanFile(
 	planText: string,
 	slugSource: string,
 	cwd: string,
 	ctx: ExtensionContext,
+	existingPath?: string,
 ): string | undefined {
-	const dir = plansDir();
-	if (!dir) {
+	const dir = existingPath ? undefined : plansDir();
+	const path = existingPath ?? (dir ? join(dir, planFileName(slugSource, new Date())) : undefined);
+	if (!path) {
 		ctx.ui.notify("Plan not saved: no plans store (run ai/pi/install.sh or set $PI_AGENT_STORE)", "warning");
 		return undefined;
 	}
-	const path = join(dir, planFileName(slugSource, new Date()));
 	const content = `---\ncreated: ${new Date().toISOString()}\ncwd: ${cwd}\n---\n\n${planText.trim()}\n`;
 	try {
 		writeFileSync(path, content);
@@ -116,7 +132,7 @@ function writePlanFile(
 		ctx.ui.notify(`Plan not saved: ${err}`, "warning");
 		return undefined;
 	}
-	ctx.ui.notify(`Plan saved: ${path.replace(homedir(), "~")}`, "info");
+	ctx.ui.notify(`Plan ${existingPath ? "updated" : "saved"}: ${path.replace(homedir(), "~")}`, "info");
 	return path;
 }
 
@@ -140,18 +156,55 @@ Asking the user (interactive planning):
 - Batch related questions into ONE questionnaire call (up to 4), each with 2-4 concrete options, recommended option first. The user can always pick "Type something" to answer free-form.
 - If the user cancels the questionnaire, do not re-ask the same questions — proceed with stated assumptions. If the tool errors (no interactive UI), ask in plain text in your response instead.
 
+Plan design (multi-agent):
+- For genuinely ambiguous or cross-cutting work, launch 3 planning subagents in parallel via the
+  subagent tool — each gets the same context (exploration results, requirements, constraints)
+  and designs a full plan independently, with no communication between them. Planning is
+  read-only: subagents propose plans, they do not implement.
+- Amalgamate the proposals into the final plan: take the strongest ideas from each, and say why
+  the chosen approach beats the alternatives.
+- Right-size: skip the 3-subagent design phase for small changes (< ~50 LOC or single-file) —
+  design solo.
+
 Planning style (user preferences):
 - Simplicity first: minimum changes that solve the problem; no speculative features, abstractions, or configurability.
 - Surgical: touch only what the request requires; no drive-by refactors, comment tweaks, or formatting.
 - Goal-driven: turn the task into verifiable goals. Each step gets a verify check (test command, typecheck, lint, or manual check) so completion is provable.
 - Respect repo rules: no commits unless explicitly asked; DB migrations land separately before implementation.
 
-Output a numbered plan under a "Plan:" header, one step per line, each ending with its verify check:
+Output format:
+
+Title: Short descriptive title naming the actual work (describe the change, not the request
+wording: "Add signup gate for XRS", not "I want a plan for gating signup")
+
+## Context
+Current state, the problem, and the goal after the change. Brief.
+
+## Approach
+The design decision and why; alternatives considered, briefly. For amalgamated plans, credit
+which proposal each key idea came from.
+
+## Multi-Agent Team Structure
+How execution will be coordinated (omit this section for small plans a single agent executes):
+- Independent chunks (no file overlap, no sequential deps) — each gets a parallel implementation
+  agent in its own worktree; list them explicitly so the coordination flow is unambiguous
+- Sequential chunks — run in order in one worktree
+- Quality pass after implementation (parallel): code review, silent-failure hunt, test-coverage
+  analysis, lint/format of changed files
+- Cleanup (sequential): simplify the implementation, then a final staff-level review of the diff
 
 Plan:
 1. First step description (files touched) — verify: <check>
 2. Second step description — verify: <check>
-...`;
+...
+
+## Verification
+End-to-end checks after all steps land (manual flows, full test suite, typecheck).
+
+## Files touched
+- New: ...
+- Modified: ...
+- Intentionally unchanged: ...`;
 
 export default function planModeExtension(pi: ExtensionAPI): void {
 	let planModeEnabled = false;
@@ -257,6 +310,60 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		handler: async (_args, ctx) => togglePlanMode(ctx),
 	});
 
+	// Execute the current plan in a fresh session whose only context is the plan file.
+	// Also the target of the "Execute in a fresh session" menu option — ctx.newSession is
+	// only available on command contexts, so agent_end queues this as a follow-up message.
+	pi.registerCommand("plan-exec-fresh", {
+		description: "Execute the current plan in a fresh session (clears context)",
+		handler: async (_args, ctx) => {
+			if (executionMode) {
+				ctx.ui.notify("Already executing the plan.", "info");
+				return;
+			}
+			if (todoItems.length === 0) {
+				ctx.ui.notify("No plan to execute — create one in plan mode first (/plan).", "info");
+				return;
+			}
+			if (!lastPlanFile) {
+				ctx.ui.notify("Plan isn't saved to disk — fresh-session execution needs the plan file.", "warning");
+				return;
+			}
+
+			// Plain data only — captured session-bound objects are stale after replacement.
+			const todos = todoItems.map((t) => ({ ...t }));
+			const planFile = lastPlanFile;
+			const parentSession = ctx.sessionManager.getSessionFile();
+			const kickoff = [
+				`Execute the plan saved at: ${planFile}`,
+				"",
+				"Read the plan file first — it has the context, approach, and full step detail. Then execute the steps in order, keeping changes surgical.",
+				"After completing a step, run its verify check, then include a [DONE:n] tag in your response.",
+				"Delegation: follow the plan's Multi-Agent Team Structure section if it has one — parallel implementation agents in separate worktrees for independent chunks, a parallel quality pass after implementation, then simplify + final review. Small plans: implement inline, then the quality pass.",
+				"Do not commit anything unless the user explicitly asks.",
+			].join("\n");
+
+			const result = await ctx.newSession({
+				parentSession,
+				setup: async (sm) => {
+					// Seed execution state so the fresh extension instance's session_start restores
+					// todos/progress tracking (plan mode itself stays off in the new session).
+					sm.appendCustomEntry("plan-mode", {
+						enabled: false,
+						todos,
+						executing: true,
+						lastPlanFile: planFile,
+					});
+				},
+				withSession: async (freshCtx) => {
+					await freshCtx.sendUserMessage(kickoff);
+				},
+			});
+			if (result.cancelled) {
+				ctx.ui.notify("Fresh-session execute cancelled — staying in plan mode.", "info");
+			}
+		},
+	});
+
 	pi.registerCommand("todos", {
 		description: "Show current plan todo list (/todos clear to dismiss)",
 		handler: async (args, ctx) => {
@@ -349,6 +456,10 @@ ${todoList}
 
 Execute each step in order. Keep changes surgical — only what the step requires.
 After completing a step, run its verify check, then include a [DONE:n] tag in your response.
+Follow the plan's Multi-Agent Team Structure section when it has one: parallel implementation
+subagents in separate worktrees for independent chunks, then a parallel quality pass (review,
+silent-failure hunt, test coverage, lint/format), then simplify + a final staff-level review.
+Small plans without that section: implement inline, then the quality pass.
 Do not commit anything unless the user explicitly asks.${planFileLine}`,
 					display: false,
 				},
@@ -395,10 +506,19 @@ Do not commit anything unless the user explicitly asks.${planFileLine}`,
 			const extracted = extractTodoItems(planText);
 			if (extracted.length > 0) {
 				todoItems = extracted;
-				// Save the plan to the shared store; slug from the triggering request
 				const lastUser = [...event.messages].reverse().find((m) => m.role === "user");
-				const slugSource = (lastUser && getUserText(lastUser)) || extracted[0]?.text || "plan";
-				lastPlanFile = writePlanFile(planText, slugSource, ctx.cwd, ctx) ?? lastPlanFile;
+				const userText = (lastUser && getUserText(lastUser)) || undefined;
+				// One file per plan-mode session: any revised plan (the Refine flow or free-form
+				// feedback) updates the original file in place. Toggling plan mode resets
+				// lastPlanFile, so the next session starts a fresh file.
+				if (lastPlanFile) {
+					lastPlanFile = writePlanFile(planText, "", ctx.cwd, ctx, lastPlanFile) ?? lastPlanFile;
+				} else {
+					// Slug from the plan's Title line (the actual work), not the request wording
+					const requestText = userText?.startsWith(REFINE_MARKER) ? undefined : userText;
+					const slugSource = extractPlanTitle(planText) || requestText || extracted[0]?.text || "plan";
+					lastPlanFile = writePlanFile(planText, slugSource, ctx.cwd, ctx) ?? lastPlanFile;
+				}
 			}
 		}
 
@@ -407,9 +527,20 @@ Do not commit anything unless the user explicitly asks.${planFileLine}`,
 
 		const choice = await ctx.ui.select("Plan mode - what next?", [
 			"Execute the plan (track progress)",
+			"Execute in a fresh session (clear context)",
 			"Stay in plan mode",
 			"Refine the plan",
 		]);
+
+		if (choice?.startsWith("Execute in a fresh")) {
+			// The fresh session operates off the plan file alone — require it to exist on disk.
+			if (!lastPlanFile) {
+				ctx.ui.notify("Plan isn't saved to disk — fresh-session execution needs the plan file.", "warning");
+				return;
+			}
+			pi.sendUserMessage("/plan-exec-fresh", { deliverAs: "followUp" });
+			return;
+		}
 
 		if (choice?.startsWith("Execute")) {
 			const firstTodoItem = todoItems[0];
@@ -429,7 +560,10 @@ Remaining steps:
 ${remainingList}
 
 Start with: ${firstTodoItem.text}
-After completing a step, run its verify check, then include a [DONE:n] tag in your response.${planFileLine}`;
+After completing a step, run its verify check, then include a [DONE:n] tag in your response.
+Delegation: follow the plan's Multi-Agent Team Structure section (full plan file below) — parallel
+implementation agents in separate worktrees for independent chunks, a parallel quality pass after
+implementation, then simplify + final review. Small plans: implement inline, then the quality pass.${planFileLine}`;
 			pi.sendMessage(
 				{ customType: "plan-mode-execute", content: execMessage, display: true },
 				{ triggerTurn: true, deliverAs: "followUp" },
@@ -442,14 +576,14 @@ After completing a step, run its verify check, then include a [DONE:n] tag in yo
 				// ACTIVE] injection), so the refine instruction must carry the context.
 				pi.sendUserMessage(
 					[
-						"[PLAN MODE - REFINE THE PLAN]",
+						REFINE_MARKER,
 						"The user reviewed the plan and wants changes. You are STILL in plan mode:",
 						"do not execute any steps and do not call edit/write tools - produce a revised plan only.",
 						"",
 						"Feedback:",
 						refinement.trim(),
 						"",
-						'Respond with the complete revised numbered plan under a "Plan:" header, one step per line, each ending with its verify check.',
+						'Respond with the complete revised plan in the same output format (Title, Context, Approach, Multi-Agent Team Structure, Plan, Verification, Files touched) — update the Title line if the scope changed.',
 					].join("\n"),
 					{ deliverAs: "followUp" },
 				);

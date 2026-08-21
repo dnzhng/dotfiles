@@ -193,7 +193,7 @@ How execution will be coordinated (omit this section for small plans a single ag
   analysis, lint/format of changed files
 - Cleanup (sequential): simplify the implementation, then a final staff-level review of the diff
 
-Plan:
+## Plan
 1. First step description (files touched) — verify: <check>
 2. Second step description — verify: <check>
 ...
@@ -538,7 +538,10 @@ Do not commit anything unless the user explicitly asks.${planFileLine}`,
 				ctx.ui.notify("Plan isn't saved to disk — fresh-session execution needs the plan file.", "warning");
 				return;
 			}
-			pi.sendUserMessage("/plan-exec-fresh", { deliverAs: "followUp" });
+			// expandPromptTemplates: true is required — sendUserMessage defaults it to false, and
+			// pi only dispatches extension commands (like /plan-exec-fresh) when it's set.
+			// Without it the command text is delivered to the model as a plain user message.
+			pi.sendUserMessage("/plan-exec-fresh", { deliverAs: "followUp", expandPromptTemplates: true });
 			return;
 		}
 

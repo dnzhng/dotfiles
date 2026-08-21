@@ -144,7 +144,9 @@ export function cleanStepText(text: string): string {
 
 export function extractTodoItems(message: string): TodoItem[] {
 	const items: TodoItem[] = [];
-	const headerMatch = message.match(/\*{0,2}Plan:\*{0,2}\s*\n/i);
+	// Header line: "Plan:" bare, "**Plan:**", or a markdown header ("## Plan" / "## Plan:") —
+	// the colon is optional because models harmonize it with the surrounding ## sections.
+	const headerMatch = message.match(/^\s{0,3}(?:#{1,6}\s*)?\*{0,2}Plan:?\*{0,2}[ \t]*$/im);
 	if (!headerMatch) return items;
 
 	let planSection = message.slice(message.indexOf(headerMatch[0]) + headerMatch[0].length);

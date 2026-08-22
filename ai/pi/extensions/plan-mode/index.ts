@@ -22,6 +22,12 @@
  *   off the plan file alone — seeds execution state into a replacement session via
  *   ctx.newSession, which is only available on command contexts (agent_end queues the
  *   command as a follow-up user message)
+ * - Side-panel integration (optional): when the side-panel extension reports the terminal
+ *   is wide enough (bus.capable via ../side-panel/bus.ts), the executing todo list is
+ *   published to the sidebar instead of the above-editor widget, and the post-plan
+ *   "what next?" menu renders in the right margin instead of a ctx.ui.select that
+ *   replaces the editor. Without side-panel (or on a narrow terminal), behavior is
+ *   byte-for-byte identical to before.
  *
  * Plans are saved as timestamped markdown files (one per plan-mode session; revisions
  * overwrite the session's file) to the shared plans store: ~/.pi/agent/memory/.plans — inside the
@@ -43,6 +49,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Key } from "@earendil-works/pi-tui";
+import { getBus, publishBus } from "../side-panel/bus.ts";
 import { registerQuestionnaireTool } from "./questionnaire.ts";
 import {
 	extractPlanTitle,
@@ -134,6 +141,38 @@ function writePlanFile(
 	}
 	ctx.ui.notify(`Plan ${existingPath ? "updated" : "saved"}: ${path.replace(homedir(), "~")}`, "info");
 	return path;
+}
+
+const PLAN_ACTIONS = [
+	"Execute the plan (track progress)",
+	"Execute in a fresh session (clear context)",
+	"Stay in plan mode",
+	"Refine the plan",
+] as const;
+
+/**
+ * Post-plan "what next?" menu. When the side panel is capable, publish the menu to
+ * the bus — side-panel renders it in the right margin and resolves the choice back
+ * (Esc / narrow-resize resolve undefined = stay, matching the select-cancel path).
+ * Otherwise fall back to the stock editor-replacing select.
+ */
+function selectPlanAction(ctx: ExtensionContext): Promise<string | undefined> {
+	if (!getBus().capable) {
+		return ctx.ui.select("Plan mode - what next?", [...PLAN_ACTIONS]);
+	}
+	return new Promise<string | undefined>((resolve) => {
+		publishBus({
+			menu: {
+				title: "Plan mode - what next?",
+				options: [...PLAN_ACTIONS],
+				resolve: (choice) => {
+					// Clear before resolving so the sidebar drops the menu immediately.
+					if (getBus().menu) publishBus({ menu: null });
+					resolve(choice);
+				},
+			},
+		});
+	});
 }
 
 const PLAN_MODE_PROMPT = `[PLAN MODE ACTIVE]
@@ -232,8 +271,17 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			ctx.ui.setStatus("plan-mode", undefined);
 		}
 
-		// Widget showing todo list
-		if (executionMode && todoItems.length > 0) {
+		// Publish todos for the side panel (null when nothing to show). The sidebar
+		// renders them only when bus.capable; max-width splices them into the margin.
+		publishBus({
+			todos:
+				executionMode && todoItems.length > 0
+					? { items: todoItems.map((t) => ({ ...t })), executing: true }
+					: null,
+		});
+
+		// Widget showing todo list — suppressed when the sidebar is live (no double display).
+		if (executionMode && todoItems.length > 0 && !getBus().capable) {
 			const lines = todoItems.map((item) => {
 				if (item.completed) {
 					return (
@@ -525,12 +573,7 @@ Do not commit anything unless the user explicitly asks.${planFileLine}`,
 		if (todoItems.length === 0) return;
 		persistState();
 
-		const choice = await ctx.ui.select("Plan mode - what next?", [
-			"Execute the plan (track progress)",
-			"Execute in a fresh session (clear context)",
-			"Stay in plan mode",
-			"Refine the plan",
-		]);
+		const choice = await selectPlanAction(ctx);
 
 		if (choice?.startsWith("Execute in a fresh")) {
 			// The fresh session operates off the plan file alone — require it to exist on disk.

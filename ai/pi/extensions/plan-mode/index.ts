@@ -21,6 +21,9 @@
  * - Age-based cleanup of the plans store at session start: plans 2+ weeks old (by filename
  *   timestamp) are deleted after a per-plan double-check; `permanent: true` in frontmatter
  *   exempts a plan
+ * - Post-execution prompt: when a plan finishes executing, offer to delete its file on the
+ *   spot (executed plans are safe to delete once their work lands), keep it, or keep it
+ *   permanently
  * - "Execute in a fresh session" (menu option / /plan-exec-fresh): clears context and executes
  *   off the plan file alone — seeds execution state into a replacement session via
  *   ctx.newSession, which is only available on command contexts (agent_end queues the
@@ -147,6 +150,35 @@ function writePlanFile(
 	}
 	ctx.ui.notify(`Plan ${existingPath ? "updated" : "saved"}: ${path.replace(homedir(), "~")}`, "info");
 	return path;
+}
+
+/**
+ * Post-execution plan-file prompt — executed plans are safe to delete once their work
+ * lands, so offer to delete the file on the spot. Returns true when the file was deleted.
+ * Skipped headless (no one to ask); Esc keeps the file.
+ */
+async function promptForExecutedPlanFile(ctx: ExtensionContext, planFile: string): Promise<boolean> {
+	if (!ctx.hasUI || !existsSync(planFile)) return false;
+	const choice = await ctx.ui.select("Plan executed. What should happen to the plan file?", [
+		"Delete the plan file",
+		"Keep it (auto-deletes after 2 weeks)",
+		"Keep it permanently",
+	]);
+	try {
+		if (choice === "Delete the plan file") {
+			unlinkSync(planFile);
+			ctx.ui.notify(`Deleted executed plan: ${planFile.replace(homedir(), "~")}`, "info");
+			return true;
+		}
+		if (choice === "Keep it permanently") {
+			writeFileSync(planFile, markPlanPermanent(readFileSync(planFile, "utf8")));
+			ctx.ui.notify("Plan marked permanent.", "info");
+		}
+		// Keep / Esc: leave the file; age-based cleanup still applies
+	} catch (err) {
+		ctx.ui.notify(`Plan file action failed: ${err}`, "warning");
+	}
+	return false;
 }
 
 const PLAN_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
@@ -281,18 +313,25 @@ The design decision and why; alternatives considered, briefly. For amalgamated p
 which proposal each key idea came from.
 
 ## Multi-Agent Team Structure
-How execution will be coordinated (omit this section for small plans a single agent executes):
-- Independent chunks (no file overlap, no sequential deps) — each gets a parallel implementation
-  agent in its own worktree; list them explicitly so the coordination flow is unambiguous
-- Sequential chunks — run in order in one worktree
-- Quality pass after implementation (parallel): code review, silent-failure hunt, test-coverage
-  analysis, lint/format of changed files
-- Cleanup (sequential): simplify the implementation, then a final staff-level review of the diff
+How execution will be coordinated. Right-size the team to the task — but every plan, small
+ones included, ends with the review team on the implemented diff:
+- Implementation: one agent per genuinely independent chunk (no file overlap, no sequential
+  deps), each in its own worktree — list them explicitly so the coordination flow is
+  unambiguous. Sequential chunks run in order in one worktree. Small plans: implement inline.
+- Review team (parallel, after implementation — always): reviewer subagents on the diff,
+  one per focus — code review (style, AGENTS.md compliance, pattern adherence),
+  silent-failure hunt (error-handling correctness), test-coverage analysis, lint/format of
+  changed files. Reviewers report findings and suggestions immediately; fix what applies
+  before moving on.
+- Cleanup (sequential, after review): simplify the implementation, then a final staff-level
+  review of the full diff (correctness, edge cases, architectural fit, production-ready?).
 
 ## Plan
 1. First step description (files touched) — verify: <check>
 2. Second step description — verify: <check>
 ...
+End with the review pass (launch the review team, fix applicable findings) as one of the
+last numbered steps — never leave it implied, so it's tracked like every other step.
 
 ## Verification
 End-to-end checks after all steps land (manual flows, full test suite, typecheck).
@@ -596,6 +635,9 @@ Do not commit anything unless the user explicitly asks.${planFileLine}`,
 				);
 				executionMode = false;
 				todoItems = [];
+				if (lastPlanFile && (await promptForExecutedPlanFile(ctx, lastPlanFile))) {
+					lastPlanFile = undefined; // file deleted — don't persist a stale path
+				}
 				updateStatus(ctx);
 				persistState(); // Save cleared state so resume doesn't restore old execution mode
 			}

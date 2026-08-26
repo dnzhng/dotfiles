@@ -215,6 +215,35 @@ export function slugify(text: string): string {
 	return slug || "plan";
 }
 
+/** Creation date parsed from a plan filename (YYYYMMDD-HHMMSS-<slug>.md, local time); undefined for non-plan files (e.g. README.md). */
+export function planFileDate(name: string): Date | undefined {
+	const match = name.match(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})-.+\.md$/);
+	if (!match) return undefined;
+	return new Date(
+		Number(match[1]),
+		Number(match[2]) - 1,
+		Number(match[3]),
+		Number(match[4]),
+		Number(match[5]),
+		Number(match[6]),
+	);
+}
+
+/** True when the plan's frontmatter carries `permanent: true` (exempt from age-based cleanup). */
+export function isPermanentPlan(content: string): boolean {
+	const frontmatter = content.match(/^---\n([\s\S]*?)\n---/);
+	return frontmatter?.[1] ? /^permanent:[ \t]*true[ \t]*$/m.test(frontmatter[1]) : false;
+}
+
+/** Mark a plan permanent by adding `permanent: true` to its frontmatter (created if absent). */
+export function markPlanPermanent(content: string): string {
+	const frontmatter = content.match(/^(---\n[\s\S]*?\n)---\n?/);
+	if (frontmatter?.[1]) {
+		return content.replace(frontmatter[0], `${frontmatter[1]}permanent: true\n---\n`);
+	}
+	return `---\npermanent: true\n---\n\n${content}`;
+}
+
 /** Sortable, collision-resistant plan filename: YYYYMMDD-HHMMSS-<slug>.md (local time). */
 export function planFileName(title: string, date: Date): string {
 	const pad = (n: number): string => String(n).padStart(2, "0");

@@ -18,6 +18,9 @@
  * - Saves each plan as a timestamped .md to the shared plans store, named from the plan's
  *   Title line (the actual work, not the request wording); one file per plan-mode session —
  *   revisions update it in place
+ * - Age-based cleanup of the plans store at session start: plans 2+ weeks old (by filename
+ *   timestamp) are deleted after a per-plan double-check; `permanent: true` in frontmatter
+ *   exempts a plan
  * - "Execute in a fresh session" (menu option / /plan-exec-fresh): clears context and executes
  *   off the plan file alone — seeds execution state into a replacement session via
  *   ctx.newSession, which is only available on command contexts (agent_end queues the
@@ -42,7 +45,7 @@
  * changes, and a verify check per plan step.
  */
 
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -54,8 +57,11 @@ import { registerQuestionnaireTool } from "./questionnaire.ts";
 import {
 	extractPlanTitle,
 	extractTodoItems,
+	isPermanentPlan,
 	isSafeCommand,
 	markCompletedSteps,
+	markPlanPermanent,
+	planFileDate,
 	planFileName,
 	type TodoItem,
 } from "./utils.ts";
@@ -141,6 +147,57 @@ function writePlanFile(
 	}
 	ctx.ui.notify(`Plan ${existingPath ? "updated" : "saved"}: ${path.replace(homedir(), "~")}`, "info");
 	return path;
+}
+
+const PLAN_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+
+/**
+ * Age-based plan cleanup, run at session start: plans 2+ weeks old (by filename
+ * timestamp) are deleted, unless frontmatter marks them `permanent: true`. Each
+ * expired plan gets a double-check first — delete, or keep permanently. Esc skips
+ * (decide later; re-asked next session). Skipped entirely headless: no one to
+ * double-check with.
+ */
+async function cleanupExpiredPlans(ctx: ExtensionContext): Promise<void> {
+	if (!ctx.hasUI) return;
+	const dir = plansDir();
+	if (!dir) return;
+
+	const expired: { path: string; name: string; title: string; days: number }[] = [];
+	for (const name of readdirSync(dir)) {
+		const date = planFileDate(name);
+		if (!date) continue; // not a plan file (e.g. README.md)
+		const ageMs = Date.now() - date.getTime();
+		if (ageMs < PLAN_MAX_AGE_MS) continue;
+		const path = join(dir, name);
+		let content: string;
+		try {
+			content = readFileSync(path, "utf8");
+		} catch {
+			continue;
+		}
+		if (isPermanentPlan(content)) continue;
+		expired.push({ path, name, title: extractPlanTitle(content) ?? name, days: Math.floor(ageMs / (24 * 60 * 60 * 1000)) });
+	}
+
+	for (const plan of expired) {
+		const choice = await ctx.ui.select(`Plan "${plan.title}" is ${plan.days} days old. Delete it?`, [
+			"Delete",
+			"Keep permanently (never auto-delete)",
+		]);
+		try {
+			if (choice === "Delete") {
+				unlinkSync(plan.path);
+				ctx.ui.notify(`Deleted expired plan: ${plan.name}`, "info");
+			} else if (choice?.startsWith("Keep")) {
+				writeFileSync(plan.path, markPlanPermanent(readFileSync(plan.path, "utf8")));
+				ctx.ui.notify(`Plan marked permanent: ${plan.name}`, "info");
+			}
+			// undefined (Esc): leave the file; the double-check re-asks next session
+		} catch (err) {
+			ctx.ui.notify(`Plan cleanup failed for ${plan.name}: ${err}`, "warning");
+		}
+	}
 }
 
 const PLAN_ACTIONS = [
@@ -688,5 +745,6 @@ implementation, then simplify + final review. Small plans: implement inline, the
 			enablePlanModeTools();
 		}
 		updateStatus(ctx);
+		await cleanupExpiredPlans(ctx);
 	});
 }

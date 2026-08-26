@@ -27,8 +27,9 @@
  *   Only arrows/Enter/Esc are captured — letters pass through so typing keeps
  *   working while deciding.
  * - Otherwise: Right arrow with an empty editor enters inspect mode for the
- *   Agents section; Up/Down/j/k select a run; Enter opens a detail overlay
- *   (live status fields + tail of the run's sessionFile transcript); Esc/Left
+ *   Agents section; Up/Down/j/k select a run (workflow runs list one selectable
+ *   entry per step under an aggregate header); Enter opens a detail overlay
+ *   (live status fields + tail of that entry's sessionFile transcript); Esc/Left
  *   backs out; any other key deactivates and passes through.
  *
  * Known limitations (v1): plain foreground subagent runs keep state in memory
@@ -41,7 +42,7 @@ import { closeSync, fstatSync, openSync, readdirSync, readFileSync, readSync, st
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { isKeyRelease, Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { isKeyRelease, Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { getBus, onBusChange, publishBus } from "./bus.ts";
 
 // Layout constants. MAX_WIDTH must match max-width.ts's cap; the panel is
@@ -52,8 +53,24 @@ const SPLICE_GAP = 2;
 const MIN_MARGIN = 26;
 const MAX_PANEL_WIDTH = 40;
 const TOP_PADDING = 1;
+// Blank painted columns on the block's left edge. The bottom edge is padded by
+// the full-height fill in buildPanel — every row below the content is blank.
+const LEFT_PAD = 2;
 const REFRESH_MS = 500;
 const WIDGET_KEY = "side-panel-capture";
+
+// Panel background: same fill as box-editor's EDITOR_BG (#1c222b) — slightly
+// darker than the pane's base00 #2b303b so the panel reads as a block. The
+// block is filled to full screen height with blank painted rows (buildPanel).
+const PANEL_BG = "\x1b[48;2;28;34;43m";
+const BG_RESET = "\x1b[49m";
+
+/** Fill a line with PANEL_BG out to width, re-applying after any embedded SGR
+ * reset (theme.fg wraps each span in \x1b[39m, which would clear the bg). */
+function paintBg(line: string, width: number): string {
+	const padded = line + " ".repeat(Math.max(0, width - visibleWidth(line)));
+	return PANEL_BG + padded.replace(/(\x1b\[(?:0|39|49)m)/g, `$1${PANEL_BG}`) + BG_RESET;
+}
 
 type UiContext = ExtensionContext;
 type Theme = ExtensionContext["ui"]["theme"];
@@ -62,11 +79,17 @@ type Theme = ExtensionContext["ui"]["theme"];
 interface RunStepLite {
 	agent?: string;
 	label?: string;
+	workflowKey?: string;
 	status?: string;
 	currentTool?: string;
 	currentPath?: string;
 	sessionFile?: string;
 	startedAt?: number;
+	lastActivityAt?: number;
+	turnCount?: number;
+	toolCount?: number;
+	model?: string;
+	thinking?: string;
 	tokens?: { total?: number };
 }
 
@@ -81,6 +104,8 @@ interface RunStatusLite {
 	currentPath?: string;
 	sessionFile?: string;
 	error?: string;
+	turnCount?: number;
+	toolCount?: number;
 	steps?: RunStepLite[];
 }
 
@@ -213,6 +238,54 @@ function toAgentRow(status: RunStatusLite, statusPath: string): AgentRow {
 	};
 }
 
+/** One selectable unit in the Agents section: the run itself for single-step
+ * runs; one entry per step for workflows (the workflow keeps a non-selectable
+ * aggregate header row above its steps). */
+interface AgentEntry {
+	row: AgentRow;
+	step?: RunStepLite;
+	label: string;
+	state: string;
+	activity?: string;
+	turnCount?: number;
+	toolCount?: number;
+}
+
+function stepActivity(s: RunStepLite): string | undefined {
+	return s.currentTool ? s.currentTool : s.currentPath ? basename(s.currentPath) : undefined;
+}
+
+function entriesOf(row: AgentRow): AgentEntry[] {
+	const steps = row.status.steps ?? [];
+	if (steps.length <= 1) {
+		const s = steps[0];
+		return [
+			{
+				row,
+				step: s,
+				label: row.label,
+				state: row.state,
+				activity: row.activity,
+				turnCount: s?.turnCount ?? row.status.turnCount,
+				toolCount: s?.toolCount ?? row.status.toolCount,
+			},
+		];
+	}
+	return steps.map((s) => ({
+		row,
+		step: s,
+		label: s.label ?? s.agent ?? "step",
+		state: s.status ?? row.state,
+		activity: stepActivity(s),
+		turnCount: s.turnCount,
+		toolCount: s.toolCount,
+	}));
+}
+
+function entryCount(rows: AgentRow[]): number {
+	return rows.reduce((n, r) => n + Math.max(1, (r.status.steps ?? []).length), 0);
+}
+
 /** Read the last maxBytes of a file, dropping the first partial line. "" on error. */
 function readTail(path: string, maxBytes: number): string {
 	let fd: number | undefined;
@@ -315,14 +388,43 @@ function todoLines(theme: Theme, items: Array<{ text: string; completed: boolean
 	return lines;
 }
 
+function stepGlyph(theme: Theme, state: string): string {
+	if (state === "running") return theme.fg("accent", "●");
+	if (state === "complete" || state === "completed") return theme.fg("success", "✓");
+	if (state === "error" || state === "failed") return theme.fg("error", "✗");
+	return theme.fg("muted", "◦");
+}
+
 function agentLines(theme: Theme, rows: AgentRow[], now: number, selectedIndex: number, inspecting: boolean): string[] {
 	const lines = [theme.fg("accent", "Agents")];
-	for (let i = 0; i < rows.length; i++) {
-		const row = rows[i]!;
-		const glyph = row.state === "running" ? theme.fg("accent", "●") : theme.fg("muted", "◦");
-		const detail = [row.state, row.activity, elapsed(now, row.startedAt)].filter(Boolean).join(" · ");
-		const marker = inspecting && i === selectedIndex ? theme.fg("accent", ">") : " ";
-		lines.push(`${marker}${glyph} ${theme.fg("muted", row.label)} ${theme.fg("dim", detail)}`);
+	let idx = 0;
+	for (const row of rows) {
+		const multi = (row.status.steps ?? []).length > 1;
+		if (multi) {
+			// Workflow header — aggregate counts + elapsed, not selectable.
+			const glyph = row.state === "running" ? theme.fg("accent", "●") : theme.fg("muted", "◦");
+			const detail = [row.state, elapsed(now, row.startedAt)].join(" · ");
+			lines.push(` ${glyph} ${theme.fg("muted", row.label)} ${theme.fg("dim", detail)}`);
+		}
+		for (const e of entriesOf(row)) {
+			const marker = inspecting && idx === selectedIndex ? theme.fg("accent", ">") : " ";
+			if (multi) {
+				const state =
+					e.state === "running"
+						? (e.activity ?? "running")
+						: e.state === "queued"
+							? "queued"
+							: e.state === "complete" || e.state === "completed"
+								? "done"
+								: e.state;
+				const detail = e.turnCount ? `${state} · ${e.turnCount}t/${e.toolCount ?? 0}u` : state;
+				lines.push(` ${marker}${stepGlyph(theme, e.state)} ${theme.fg("muted", e.label)} ${theme.fg("dim", detail)}`);
+			} else {
+				const detail = [e.state, e.activity, elapsed(now, e.row.startedAt)].filter(Boolean).join(" · ");
+				lines.push(`${marker}${stepGlyph(theme, e.state)} ${theme.fg("muted", e.label)} ${theme.fg("dim", detail)}`);
+			}
+			idx++;
+		}
 	}
 	return lines;
 }
@@ -390,12 +492,24 @@ export default function sidePanelExtension(pi: ExtensionAPI): void {
 			sections.push(todoLines(theme, bus.todos.items));
 		}
 		if (agentRows.length > 0) {
-			if (agentIndex >= agentRows.length) agentIndex = agentRows.length - 1;
+			const count = entryCount(agentRows);
+			if (agentIndex >= count) agentIndex = count - 1;
 			sections.push(agentLines(theme, agentRows, Date.now(), agentIndex, inspecting));
 		}
 		if (sections.length === 0) return null;
 		const lines = sections.flatMap((s, i) => (i === 0 ? s : ["", ...s]));
-		return { lines: [...Array(TOP_PADDING).fill(""), ...lines.flatMap((l) => wrapTextWithAnsi(l, width))], width };
+		const contentWidth = Math.max(1, width - LEFT_PAD);
+		const painted = [...Array(TOP_PADDING).fill(""), ...lines.flatMap((l) => wrapTextWithAnsi(l, contentWidth))].map(
+			(l) => paintBg(" ".repeat(LEFT_PAD) + l, width),
+		);
+		// Full-height fill: pad the column out to the screen height with blank
+		// painted rows. max-width clamps the splice to the transcript viewport
+		// (transcriptLines in regular mode, viewportHeight in fullscreen), so
+		// rows past the viewport are simply never spliced.
+		const blank = paintBg("", width);
+		const rows = process.stdout.rows || 40;
+		while (painted.length < rows) painted.push(blank);
+		return { lines: painted, width };
 	}
 
 	function rebuildPanel(): void {
@@ -448,34 +562,50 @@ export default function sidePanelExtension(pi: ExtensionAPI): void {
 		return (steps.find((s) => s.status === "running") ?? steps[0])?.sessionFile;
 	}
 
-	async function openDetail(row: AgentRow): Promise<void> {
+	async function openDetail(entry: AgentEntry): Promise<void> {
 		if (!ui || overlayOpen) return;
 		overlayOpen = true;
+		const row = entry.row;
+		// Live step resolution: workflow children are re-found by workflowKey on
+		// each refresh (their status flips queued → running → complete); entries
+		// without a workflowKey keep their snapshot.
+		const stepOf = (status: RunStatusLite): RunStepLite | undefined =>
+			entry.step?.workflowKey
+				? ((status.steps ?? []).find((s) => s.workflowKey === entry.step?.workflowKey) ?? entry.step)
+				: entry.step;
+		// Preview target: the step's own session file (workflow children keep
+		// their own), else the run's, else the first running step's.
+		const sessionOf = (status: RunStatusLite): string | undefined =>
+			stepOf(status)?.sessionFile ?? detailSessionFile(status);
 		try {
 			await ui.ui.custom(
 				(overlayTui, theme, _kb, done) => {
 					let status: RunStatusLite = readRunStatus(row.statusPath) ?? row.status;
-					let body = transcriptLines(detailSessionFile(status) ?? "");
+					let body = transcriptLines(sessionOf(status) ?? "");
 					let offset = Number.POSITIVE_INFINITY; // tail-follow until the user scrolls
 					let cached: string[] | undefined;
 					const liveTimer = setInterval(() => {
 						status = readRunStatus(row.statusPath) ?? status;
-						body = transcriptLines(detailSessionFile(status) ?? "");
+						body = transcriptLines(sessionOf(status) ?? "");
 						cached = undefined;
 						overlayTui.requestRender();
 					}, 1000);
 					liveTimer.unref?.();
 
 					function header(): string[] {
+						const step = stepOf(status);
+						const started = step?.startedAt ?? status.startedAt;
 						const pairs: Array<[string, string | undefined]> = [
 							["run", row.id],
-							["state", status.state],
+							["step", step ? (step.label ?? step.agent) : undefined],
+							["state", step?.status ?? status.state],
 							["mode", status.mode],
-							["elapsed", status.startedAt ? elapsed(Date.now(), status.startedAt) : undefined],
-							["tool", status.currentTool],
-							["path", status.currentPath],
+							["elapsed", started ? elapsed(Date.now(), started) : undefined],
+							["activity", step?.turnCount ? `${step.turnCount} turns · ${step.toolCount ?? 0} tools` : undefined],
+							["tool", step?.currentTool ?? status.currentTool],
+							["path", step?.currentPath ?? status.currentPath],
 							["error", status.error],
-							["session", detailSessionFile(status)],
+							["session", sessionOf(status)],
 						];
 						return pairs
 							.filter((p): p is [string, string] => Boolean(p[1]))
@@ -583,7 +713,7 @@ export default function sidePanelExtension(pi: ExtensionAPI): void {
 			return { consume: true };
 		}
 		if (matchesKey(data, "down") || matchesKey(data, "j")) {
-			agentIndex = Math.min(agentRows.length - 1, agentIndex + 1);
+			agentIndex = Math.min(entryCount(agentRows) - 1, agentIndex + 1);
 			rebuildPanel();
 			return { consume: true };
 		}
@@ -598,8 +728,8 @@ export default function sidePanelExtension(pi: ExtensionAPI): void {
 			return { consume: true };
 		}
 		if (matchesKey(data, Key.enter)) {
-			const row = agentRows[agentIndex];
-			if (row) void openDetail(row);
+			const entry = agentRows.flatMap(entriesOf)[agentIndex];
+			if (entry) void openDetail(entry);
 			return { consume: true };
 		}
 		// Any other key deactivates and passes through.

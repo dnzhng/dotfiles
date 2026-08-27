@@ -53,24 +53,18 @@ const SPLICE_GAP = 2;
 const MIN_MARGIN = 26;
 const MAX_PANEL_WIDTH = 40;
 const TOP_PADDING = 1;
-// Blank painted columns on the block's left edge. The bottom edge is padded by
-// the full-height fill in buildPanel — every row below the content is blank.
+// Blank columns between the separator and the content. The bottom edge is
+// padded by the full-height fill in buildPanel.
 const LEFT_PAD = 2;
 const REFRESH_MS = 500;
 const WIDGET_KEY = "side-panel-capture";
 
-// Panel background: same fill as box-editor's EDITOR_BG (#1c222b) — slightly
-// darker than the pane's base00 #2b303b so the panel reads as a block. The
-// block is filled to full screen height with blank painted rows (buildPanel).
-const PANEL_BG = "\x1b[48;2;28;34;43m";
-const BG_RESET = "\x1b[49m";
-
-/** Fill a line with PANEL_BG out to width, re-applying after any embedded SGR
- * reset (theme.fg wraps each span in \x1b[39m, which would clear the bg). */
-function paintBg(line: string, width: number): string {
-	const padded = line + " ".repeat(Math.max(0, width - visibleWidth(line)));
-	return PANEL_BG + padded.replace(/(\x1b\[(?:0|39|49)m)/g, `$1${PANEL_BG}`) + BG_RESET;
-}
+// Separator: a dim │ in the panel's first column on every row — top padding
+// and the full-height fill included — so it reads as one continuous vertical
+// line spanning the window height: the boundary between transcript and panel.
+// It costs one column of content width; all other spacing (SPLICE_GAP,
+// LEFT_PAD, TOP_PADDING) is unchanged.
+const SEPARATOR = "│";
 
 type UiContext = ExtensionContext;
 type Theme = ExtensionContext["ui"]["theme"];
@@ -498,15 +492,17 @@ export default function sidePanelExtension(pi: ExtensionAPI): void {
 		}
 		if (sections.length === 0) return null;
 		const lines = sections.flatMap((s, i) => (i === 0 ? s : ["", ...s]));
-		const contentWidth = Math.max(1, width - LEFT_PAD);
+		const separator = theme.fg("dim", SEPARATOR);
+		const padTo = (l: string): string => l + " ".repeat(Math.max(0, width - visibleWidth(l)));
+		const contentWidth = Math.max(1, width - 1 - LEFT_PAD); // 1 for the separator
 		const painted = [...Array(TOP_PADDING).fill(""), ...lines.flatMap((l) => wrapTextWithAnsi(l, contentWidth))].map(
-			(l) => paintBg(" ".repeat(LEFT_PAD) + l, width),
+			(l) => padTo(separator + " ".repeat(LEFT_PAD) + l),
 		);
-		// Full-height fill: pad the column out to the screen height with blank
-		// painted rows. max-width clamps the splice to the transcript viewport
-		// (transcriptLines in regular mode, viewportHeight in fullscreen), so
-		// rows past the viewport are simply never spliced.
-		const blank = paintBg("", width);
+		// Full-height fill: pad the column out to the screen height with
+		// separator-only rows. max-width clamps the splice to the transcript
+		// viewport (transcriptLines in regular mode, viewportHeight in
+		// fullscreen), so rows past the viewport are simply never spliced.
+		const blank = padTo(separator);
 		const rows = process.stdout.rows || 40;
 		while (painted.length < rows) painted.push(blank);
 		return { lines: painted, width };

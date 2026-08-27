@@ -15,10 +15,16 @@
  * Also insets the built-in footer by the same OUTER_MARGIN (prototype patch,
  * same approach as max-width.ts) so the footer's left/right edges land on the
  * panel edges instead of the screen edges — one continuous bottom dock.
+ *
+ * Also adds Claude Code-style double-escape: a second Esc within 500ms while
+ * idle clears non-empty input (pi's built-in Esc ignores Esc when the editor
+ * has text; double-Esc on an empty editor still opens the tree/fork selector).
+ * Lives here because setEditorComponent is single-winner — one extension must
+ * own the editor factory.
  */
 
 import { CustomEditor, FooterComponent, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { matchesKey, visibleWidth } from "@earendil-works/pi-tui";
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const stripAnsi = (s: string): string => s.replace(ANSI_RE, "");
@@ -32,6 +38,7 @@ const isBorderLine = (s: string): boolean =>
 // below the pane's base00 #2b303b; for a near-black panel try 22;26;32).
 const OUTER_MARGIN = 2;
 const INNER_PAD = 1;
+const DOUBLE_PRESS_MS = 500; // same window as pi's built-in double-escape
 const EDITOR_BG = "\x1b[48;2;28;34;43m";
 const BG_RESET = "\x1b[49m";
 
@@ -89,6 +96,25 @@ export function boxifyLines(
 }
 
 export class BoxEditor extends CustomEditor {
+	/** Idle check for the double-escape clear; set per-session by the factory. */
+	isIdle: () => boolean = () => true;
+	private lastEscapeAt = 0;
+
+	handleInput(data: string): void {
+		if (matchesKey(data, "escape") && !this.isShowingAutocomplete()) {
+			const now = Date.now();
+			const isDouble = now - this.lastEscapeAt <= DOUBLE_PRESS_MS;
+			this.lastEscapeAt = now;
+
+			if (isDouble && this.isIdle() && this.getText().length > 0) {
+				this.setText("");
+				this.lastEscapeAt = 0;
+				return; // swallow so the built-in interrupt handler doesn't fire
+			}
+		}
+		super.handleInput(data);
+	}
+
 	render(width: number): string[] {
 		const boxWidth = width - OUTER_MARGIN * 2;
 		if (boxWidth < 8) return super.render(width); // too narrow for a panel
@@ -120,8 +146,11 @@ function alignFooterWithPanel(): void {
 export default function (pi: ExtensionAPI) {
 	alignFooterWithPanel();
 	pi.on("session_start", (_event, ctx) => {
-		ctx.ui.setEditorComponent(
-			(tui, theme, keybindings) => new BoxEditor(tui, theme, keybindings),
-		);
+		if (ctx.mode !== "tui") return;
+		ctx.ui.setEditorComponent((tui, theme, keybindings) => {
+			const editor = new BoxEditor(tui, theme, keybindings);
+			editor.isIdle = () => ctx.isIdle();
+			return editor;
+		});
 	});
 }

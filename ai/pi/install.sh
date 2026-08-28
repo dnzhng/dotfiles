@@ -161,7 +161,8 @@ if jq -s '
   def union: reduce .[] as $x ([]; if any(.[]; . == $x) then . else . + [$x] end);
   (reduce .[] as $o ({}; . * $o)) as $m
   | ([.[].packages // []] | add // [] | union) as $pkgs
-  | $m | .packages = $pkgs
+  | ([.[].enabledModels // []] | add // [] | union) as $em
+  | $m | .packages = $pkgs | .enabledModels = $em
 ' "${inputs[@]}" > "$SETTINGS.tmp"; then
     mv "$SETTINGS.tmp" "$SETTINGS"
     echo "  Merged ${#inputs[@]} layer(s) -> settings.json (machine-local keys preserved)"

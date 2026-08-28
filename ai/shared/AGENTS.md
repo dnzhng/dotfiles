@@ -57,6 +57,7 @@ Do NOT format or lint files when exploring or reading them. Only format/lint fil
 
 - Use ES modules (import/export), not CommonJS (require)
 - Destructure imports when possible (e.g., `import { foo } from 'bar'`)
+- Keep comments minimal. Generally a single line, and only when it adds something the code doesn't already say — a non-obvious business rule, a workaround, a magic number's provenance. Avoid long comment blocks, section banners, or narrating what the next lines do. If the user explicitly asks for comments or TODO notes, that's fine.
 
 # Git
 

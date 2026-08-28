@@ -144,12 +144,18 @@ fi
 echo "Merging settings..."
 BASE_SETTINGS="$SCRIPT_DIR/settings.base.json"
 SETTINGS="$PI_DIR/settings.json"
+# Private overlay (default model + any provider-specific scalars). Lives in the
+# private repo because it references the private open-weights-long provider
+# (see private/ai/shared/pi/models.json). Merged last so it wins over the
+# public base; machine-local keys not present in either overlay survive.
+PRIVATE_SETTINGS="$(cd "$SCRIPT_DIR/../.." && pwd)/private/ai/shared/pi/settings.private.json"
 
 command -v jq >/dev/null || { echo "Error: jq is required (brew/apt install jq)"; exit 1; }
 
 inputs=()
 [ -f "$SETTINGS" ] && inputs+=("$SETTINGS")
 inputs+=("$BASE_SETTINGS")
+[ -f "$PRIVATE_SETTINGS" ] && inputs+=("$PRIVATE_SETTINGS")
 
 if jq -s '
   def union: reduce .[] as $x ([]; if any(.[]; . == $x) then . else . + [$x] end);

@@ -51,6 +51,48 @@ for ext in "$SCRIPT_DIR/extensions"/*; do
     echo "  Linked $name"
 done
 
+# Symlink subagent files into ~/.pi/agent/agents, one symlink per agent .md.
+# Same conflict policy as extensions: a non-symlink destination is left alone.
+# These are Embassy-style model-routed agents (pinned cheap/appropriate model
+# per task type); see APPEND_SYSTEM.md for the routing rules the parent uses.
+echo "Symlinking pi agents..."
+mkdir -p "$PI_DIR/agents"
+for agent in "$SCRIPT_DIR/agents"/*.md; do
+    [ -e "$agent" ] || continue
+    name=$(basename "$agent")
+    dest="$PI_DIR/agents/$name"
+    if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$agent" ]; then
+        echo "  Already linked $name"
+        continue
+    fi
+    if [ -L "$dest" ]; then
+        rm -f "$dest"
+    elif [ -e "$dest" ]; then
+        echo "  Skipped $name (exists, not a dotfiles symlink — leaving it alone)"
+        continue
+    fi
+    ln -s "$agent" "$dest"
+    echo "  Linked $name"
+done
+
+# Symlink APPEND_SYSTEM.md (parent system-prompt append — hosts the routing
+# rules for the agents above) into ~/.pi/agent. Same conflict policy.
+echo "Symlinking pi APPEND_SYSTEM.md..."
+dest="$PI_DIR/APPEND_SYSTEM.md"
+src="$SCRIPT_DIR/APPEND_SYSTEM.md"
+if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$src" ]; then
+    echo "  Already linked APPEND_SYSTEM.md"
+elif [ -L "$dest" ]; then
+    rm -f "$dest"
+    ln -s "$src" "$dest"
+    echo "  Linked APPEND_SYSTEM.md"
+elif [ -e "$dest" ]; then
+    echo "  Skipped APPEND_SYSTEM.md (exists, not a dotfiles symlink — leaving it alone)"
+else
+    ln -s "$src" "$dest"
+    echo "  Linked APPEND_SYSTEM.md"
+fi
+
 # Symlink the shared agent-memory store into ~/.pi/agent/memory for the
 # memory extension (private/ai/shared/memory/agent — one subdir per project,
 # MEMORY.md index per subdir). $PI_AGENT_STORE overrides at runtime

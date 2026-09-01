@@ -1,7 +1,7 @@
 ---
 name: image-reader
 description: Read one image at a path the parent passes and answer a specific question about it. read only. Use when the primary model cannot handle images.
-model: instacart-anthropic/claude-haiku-4-5@20251001
+model: instacart-openai/gpt-5.6-luna
 tools: read
 thinking: off
 systemPromptMode: replace

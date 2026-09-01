@@ -1,7 +1,7 @@
 ---
 name: commit-pr-drafter
 description: Draft a conventional-commit subject and Instacart [FOX] PR body from a diff or commit range passed in the task. No tools — pure generation.
-model: open-weights/deepseek-v4-flash-0731-priority
+model: instacart-openai/gpt-5.6-luna
 tools: ""
 thinking: low
 systemPromptMode: replace

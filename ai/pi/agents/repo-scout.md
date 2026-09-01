@@ -1,7 +1,7 @@
 ---
 name: repo-scout
 description: Read-only broad code search across a repo. Returns findings with path:lineRange and an unresolved list. read, grep, find, ls only — no bash, no mutation.
-model: open-weights/deepseek-v4-flash-0731-priority
+model: instacart-openai/gpt-5.6-luna
 tools: read, grep, find, ls
 thinking: low
 systemPromptMode: replace

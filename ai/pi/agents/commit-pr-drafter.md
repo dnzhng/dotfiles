@@ -1,6 +1,6 @@
 ---
 name: commit-pr-drafter
-description: Draft a conventional-commit subject and Instacart [FOX] PR body from a diff or commit range passed in the task. No tools — pure generation.
+description: Draft a conventional-commit subject and Instacart [FOX] PR body from a diff or commit range passed in the task. No tools — pure generation only; the parent runs git/gh with the returned text. An empty `tools` field is correct by design.
 model: instacart-openai/gpt-5.6-luna
 tools: ""
 thinking: low

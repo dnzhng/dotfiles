@@ -20,7 +20,9 @@
  *   revisions update it in place
  * - Age-based cleanup of the plans store at session start: plans 2+ weeks old (by filename
  *   timestamp) are deleted after a per-plan double-check; `permanent: true` in frontmatter
- *   exempts a plan
+ *   exempts a plan. Skipped when the plans repo is behind its upstream — a pending sync
+ *   would pull plan deletions made on another machine, so prompting now races with that
+ *   sync (the file can vanish between scan and confirm); cleanup runs next session in sync
  * - Post-execution prompt: when a plan finishes executing, offer to delete its file on the
  *   spot (executed plans are safe to delete once their work lands), keep it, or keep it
  *   permanently
@@ -48,6 +50,7 @@
  * changes, and a verify check per plan step.
  */
 
+import { execFile, execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -110,6 +113,30 @@ function getUserText(message: AgentMessage): string | undefined {
 			.join("\n");
 	}
 	return undefined;
+}
+
+/**
+ * Whether the git repo containing the plans store is behind its upstream — i.e. the
+ * remote has commits (plan deletions made on another machine) not yet pulled here.
+ * Best-effort fetch first so the comparison reflects the remote; any git error (no
+ * upstream, offline, not a repo) returns false so cleanup proceeds normally rather
+ * than silently never running when git is unavailable.
+ */
+async function isPlansRepoBehind(dir: string): Promise<boolean> {
+	await new Promise<void>((resolve) => {
+		execFile("git", ["-C", dir, "fetch", "--quiet"], { timeout: 15000 }, () => resolve());
+	});
+	try {
+		const counts = execFileSync("git", ["-C", dir, "rev-list", "--left-right", "--count", "HEAD...@{u}"], {
+			stdio: ["ignore", "pipe", "ignore"],
+		})
+			.toString()
+			.trim();
+		const behind = Number(counts.split(/\s+/)[1]);
+		return Number.isFinite(behind) && behind > 0;
+	} catch {
+		return false;
+	}
 }
 
 /** Plans store: $PI_AGENT_STORE/memory/agent/.plans, else ~/.pi/agent/memory/.plans; undefined if neither exists. */
@@ -195,6 +222,15 @@ async function cleanupExpiredPlans(ctx: ExtensionContext): Promise<void> {
 	const dir = plansDir();
 	if (!dir) return;
 
+	// Skip when the plans repo is behind its upstream: a pending sync will pull plan
+	// deletions made on another machine, so prompting now races with that sync (the
+	// file can vanish between the scan and the confirm). Cleanup runs next session
+	// once in sync; any genuinely-local expired plans are just deferred one session.
+	if (await isPlansRepoBehind(dir)) {
+		ctx.ui.notify("Plan cleanup skipped: dotfiles behind — sync to pull deletions made elsewhere.", "info");
+		return;
+	}
+
 	const expired: { path: string; name: string; title: string; days: number }[] = [];
 	for (const name of readdirSync(dir)) {
 		const date = planFileDate(name);
@@ -217,6 +253,12 @@ async function cleanupExpiredPlans(ctx: ExtensionContext): Promise<void> {
 			"Delete",
 			"Keep permanently (never auto-delete)",
 		]);
+		// A concurrent dotfiles sync may remove the file between the scan and this confirm;
+		// treat already-gone as handled (the plan was deleted elsewhere) instead of erroring.
+		if (!existsSync(plan.path)) {
+			if (choice !== undefined) ctx.ui.notify(`Plan already removed elsewhere: ${plan.name}`, "info");
+			continue;
+		}
 		try {
 			if (choice === "Delete") {
 				unlinkSync(plan.path);

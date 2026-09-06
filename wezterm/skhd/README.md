@@ -39,5 +39,13 @@ versions it also asks for Input Monitoring — approve that too.)
   granted; then check the logs at `/tmp/skhd_<user>.out.log` /
   `/tmp/skhd_<user>.err.log` (a config parse error exits skhd cleanly, which
   launchd does *not* auto-restart).
+- `install.sh` strips `Nice -20` from the service plist: skhd's
+  `--install-service` template pins the daemon at the highest scheduler
+  priority on the machine, which can freeze the system if skhd spins after
+  losing its CGEventTap (e.g. Accessibility revoked while running). A hotkey
+  daemon doesn't need elevated priority, so the installer removes it.
+- If toggling skhd's Accessibility permission while it's running hangs the
+  machine, stop the service first (`skhd --stop-service`), then toggle, then
+  `skhd --start-service` — revoking the event tap mid-flight is what spins.
 - ⌥space is swallowed globally, so it won't reach other apps. Rebind here if
   that annoys.

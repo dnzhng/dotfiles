@@ -32,6 +32,14 @@ else
     echo "  Linked $TARGET -> $DESIRED"
 fi
 
+# skhd --install-service bakes in `Nice -20` (highest scheduler priority on
+# the machine). A hotkey daemon doesn't need it, and -20 can freeze the
+# machine if skhd spins after losing its CGEventTap (e.g. Accessibility
+# revoked mid-flight). Strip it so launchd runs skhd at normal priority.
+PLIST="$HOME/Library/LaunchAgents/com.koekeishiya.skhd.plist"
+[ -f "$PLIST" ] || skhd --install-service 2>/dev/null || true
+plutil -remove Nice "$PLIST" 2>/dev/null || true
+
 # Start (or restart) the launchd service
 if skhd --restart-service > /dev/null 2>&1; then
     echo "skhd service restarted"

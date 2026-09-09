@@ -8,9 +8,12 @@ set -e
 # Invoked directly, via the fish `dotfiles-sync` function, or pi's `/sync`.
 # $DOTFILES_DIR overrides the repo root; default is this script's own dir.
 #
-# --no-push: commit + pull --rebase on both repos and reinstall, but skip the
-# push step. Use when you have local private/ changes you don't want to ship
-# upstream yet still want AGENTS.md (and other installs) refreshed locally.
+# --no-push: pull --rebase on both repos and reinstall, but skip both the
+# commit and the push. Local changes stay uncommitted in the working tree so
+# in-progress work isn't auto-committed as "chore: sync dotfiles". The pull
+# uses --autostash so a dirty tree rebases cleanly and your changes are
+# reapplied afterward. Use when you want your machine's installs refreshed
+# from the latest remote without shipping half-done local edits.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${DOTFILES_DIR:-$SCRIPT_DIR}"
@@ -29,13 +32,19 @@ sync_repo() {
     echo "== $label ($dir)"
 
     if ! git -C "$dir" rev-parse --abbrev-ref '@{u}' > /dev/null 2>&1; then
-        echo "  No upstream configured — skipping pull/push (committing only)"
+        echo "  No upstream configured — skipping pull/push"
         local has_upstream=""
     else
         local has_upstream=1
     fi
 
-    if [ -n "$(git -C "$dir" status --porcelain)" ]; then
+    if [ -z "$PUSH" ]; then
+        if [ -n "$(git -C "$dir" status --porcelain)" ]; then
+            echo "  Leaving local changes uncommitted (--no-push)"
+        else
+            echo "  No local changes"
+        fi
+    elif [ -n "$(git -C "$dir" status --porcelain)" ]; then
         git -C "$dir" add -A
         git -C "$dir" commit -m "chore: sync dotfiles"
         echo "  Committed local changes"

@@ -53,8 +53,20 @@ sync_repo() {
     fi
 
     if [ -n "$has_upstream" ]; then
+        # git pull --rebase refuses with "Cannot rebase onto multiple branches"
+        # when branch.<branch>.merge has >1 value (a botched --set-upstream / config
+        # edit). Dedupe to the first so the pull can proceed.
+        local branch merges
+        branch="$(git -C "$dir" rev-parse --abbrev-ref HEAD)"
+        mapfile -t merges < <(git -C "$dir" config --get-all "branch.$branch.merge")
+        if [ ${#merges[@]} -gt 1 ]; then
+            git -C "$dir" config --unset-all "branch.$branch.merge"
+            git -C "$dir" config --add "branch.$branch.merge" "${merges[0]}"
+            echo "  Deduped branch.$branch.merge (had ${#merges[@]} values)"
+        fi
+
         if ! git -C "$dir" pull --rebase --autostash; then
-            echo "Error: rebase conflict in $label — resolve it, then re-run sync" >&2
+            echo "Error: pull --rebase failed in $label — see output above, then re-run sync" >&2
             exit 1
         fi
         if [ -z "$PUSH" ]; then

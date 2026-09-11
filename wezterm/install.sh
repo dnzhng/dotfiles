@@ -4,11 +4,11 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET_DIR="$HOME/.config/wezterm"
 
-# Require wezterm: app bundle on macOS, binary on PATH elsewhere
+# Skip cleanly when wezterm isn't installed: app bundle on macOS, binary on PATH elsewhere
 if [ ! -d "/Applications/WezTerm.app" ] && ! command -v wezterm > /dev/null; then
-    echo "Error: WezTerm is required but not installed."
+    echo "WezTerm not installed — skipping."
     echo "  macOS: download from https://wezterm.org (or brew install --cask wezterm)"
-    exit 1
+    exit 0
 fi
 
 # Symlink ~/.config/wezterm/{wezterm.lua,toggle-wezterm.applescript} -> dotfiles

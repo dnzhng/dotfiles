@@ -26,6 +26,63 @@ for arg in "$@"; do
 	esac
 done
 
+# Per-run log: full stdout+stderr of every sync, so transient races and
+# install failures can be diagnosed after the fact. Override with
+# $DOTFILES_SYNC_LOG. Default follows XDG state dir.
+LOG="${DOTFILES_SYNC_LOG:-$HOME/.local/state/dotfiles/sync.log}"
+mkdir -p "$(dirname "$LOG")"
+
+# Self-purge: drop sync runs older than 24 hours so the log can't grow
+# unbounded. Trim BEFORE this run is appended — after that, `tee -a` holds
+# the file open, so swapping it via `mv` would lose the in-flight tail.
+# Each run begins with a `sync.sh run — <timestamp> — args:` marker; we find
+# the first marker within the last 24h and keep from there. If every run is
+# older than 24h, keep the most recent one so the log never goes empty.
+# date flags differ between BSD (macOS) and GNU (Linux), so detect once.
+is_gnu_date() { date --version >/dev/null 2>&1; }
+cutoff_epoch() {
+	if is_gnu_date; then date -d '24 hours ago' +%s; else date -v-24H +%s; fi
+}
+ts_to_epoch() {
+	# $1 = "2026-09-11 08:06:34 -0700" (from the run marker).
+	if is_gnu_date; then date -d "$1" +%s 2>/dev/null; else date -j -f "%Y-%m-%d %H:%M:%S %z" "$1" +%s 2>/dev/null; fi
+}
+trim_log() {
+	[ -f "$LOG" ] || return 0
+	local cutoff markers
+	cutoff="$(cutoff_epoch)" || return 0
+	markers="$(grep -n '^sync\.sh run — ' "$LOG")" || return 0
+	local keep_line="" entry lineno marker ts epoch
+	while IFS= read -r entry; do
+		lineno="${entry%%:*}"
+		marker="${entry#*:}"
+		ts="${marker#sync.sh run — }"
+		ts="${ts%% — args: *}"
+		epoch="$(ts_to_epoch "$ts")"
+		if [ -n "$epoch" ] && [ "$epoch" -ge "$cutoff" ]; then
+			keep_line="$lineno"
+			break
+		fi
+	done <<< "$markers"
+	if [ -z "$keep_line" ]; then
+		keep_line="$(printf '%s\n' "$markers" | tail -1 | cut -d: -f1)"
+	fi
+	# The `====` header line sits one line above the marker; start there for
+	# a clean opening. Swap via temp + mv so the open `tee` fd stays valid.
+	local tmp
+	tmp="$(mktemp)"
+	tail -n +"$((keep_line - 1))" "$LOG" > "$tmp" && mv "$tmp" "$LOG"
+}
+trim_log
+
+{
+	echo
+	echo "=========================================================="
+	echo "sync.sh run — $(date '+%Y-%m-%d %H:%M:%S %z') — args: $* — push=${PUSH:-0}"
+	echo "=========================================================="
+} >> "$LOG"
+exec > >(tee -a "$LOG") 2>&1
+
 # commit -> pull --rebase -> push one repo ($1 = path, $2 = label).
 sync_repo() {
     local dir="$1" label="$2"
@@ -65,8 +122,30 @@ sync_repo() {
             echo "  Deduped branch.$branch.merge (had ${#merges[@]} values)"
         fi
 
-        if ! git -C "$dir" pull --rebase --autostash; then
-            echo "Error: pull --rebase failed in $label — see output above, then re-run sync" >&2
+        # `git pull --rebase` can transiently fail with "Cannot rebase onto
+        # multiple branches" when another `git fetch` runs concurrently on the
+        # same repo — pi's session_start out-of-date check fires a fetch on
+        # every new session, so a /sync invoked shortly after session start
+        # (or from another tmux pane) races it. The conflict clears in
+        # seconds, so retry a few times with backoff before giving up. The
+        # multi-merge dedupe above handles the persistent (botched config)
+        # variant of the same error message.
+        local pull_out pull_rc attempt
+        for attempt in 1 2 3; do
+            pull_out="$(git -C "$dir" pull --rebase --autostash 2>&1)" && pull_rc=0 || pull_rc=$?
+            printf '%s\n' "$pull_out"
+            if [ "$pull_rc" -eq 0 ]; then
+                break
+            fi
+            if printf '%s' "$pull_out" | grep -q "Cannot rebase onto multiple branches"; then
+                echo "  Transient fetch/pull race (attempt $attempt/3) — retrying after backoff…" >&2
+                [ "$attempt" -lt 3 ] && sleep $((attempt * 2))
+                continue
+            fi
+            break
+        done
+        if [ "$pull_rc" -ne 0 ]; then
+            echo "Error: pull --rebase failed in $label — see $LOG, then re-run sync" >&2
             exit 1
         fi
         if [ -z "$PUSH" ]; then

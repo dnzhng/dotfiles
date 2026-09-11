@@ -118,7 +118,8 @@ function runSync(root: string, ctx: ExtensionContext, noPush = false): void {
 	execFile("bash", [join(root, "sync.sh"), ...(noPush ? ["--no-push"] : [])], { timeout: 120_000 }, (error, _stdout, stderr) => {
 		if (error) {
 			const tail = (stderr || "sync.sh failed").trim().split("\n").slice(-5).join("\n");
-			ctx.ui.notify(`Dotfiles sync failed:\n${tail}`, "error");
+			const log = process.env.DOTFILES_SYNC_LOG ?? `${homedir()}/.local/state/dotfiles/sync.log`;
+			ctx.ui.notify(`Dotfiles sync failed:\n${tail}\n(full log: ${log})`, "error");
 		} else {
 			ctx.ui.notify(noPush ? "Dotfiles pulled & reinstalled (no push)" : "Dotfiles synced and reinstalled", "info");
 		}

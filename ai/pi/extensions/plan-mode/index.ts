@@ -6,6 +6,9 @@
  *
  * Features:
  * - /plan command or Ctrl+Alt+P to toggle
+ * - Model routing: entering plan mode switches the session to a stronger planning
+ *   model (gpt-5.6-sol) and leaving/executing restores the previous model —
+ *   session-scoped via pi.setModel, so the configured default is untouched
  * - Bash restricted to allowlisted read-only commands
  * - Extracts numbered plan steps from "Plan:" sections
  * - [DONE:n] markers to complete steps during execution
@@ -86,7 +89,11 @@ interface PlanModeState {
 	executing?: boolean;
 	toolsBeforePlanMode?: string[];
 	lastPlanFile?: string;
+	modelBeforePlanMode?: { provider: string; id: string };
 }
+
+// Model used while plan mode is active (session-scoped switch; restored on exit).
+const PLAN_MODEL = { provider: "instacart-openai", id: "gpt-5.6-sol" } as const;
 
 // Type guard for assistant messages
 function isAssistantMessage(m: AgentMessage): m is AssistantMessage {
@@ -363,8 +370,10 @@ ones included, ends with the review team on the implemented diff:
 - Review team (parallel, after implementation — always): reviewer subagents on the diff,
   one per focus — code review (style, AGENTS.md compliance, pattern adherence),
   silent-failure hunt (error-handling correctness), test-coverage analysis, lint/format of
-  changed files. Reviewers report findings and suggestions immediately; fix what applies
-  before moving on.
+  changed files, and a comment audit (flag over-added comments: narrative restatement,
+  change narration, redundant JSDoc — dispatch the comment-sweeper subagent with the
+  changed-file list to do the actual removal). Reviewers report findings and suggestions
+  immediately; fix what applies before moving on.
 - Cleanup (sequential, after review): simplify the implementation, then a final staff-level
   review of the full diff (correctness, edge cases, architectural fit, production-ready?).
 
@@ -389,6 +398,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	let todoItems: TodoItem[] = [];
 	let toolsBeforePlanMode: string[] | undefined;
 	let lastPlanFile: string | undefined;
+	let modelBeforePlanMode: { provider: string; id: string } | undefined;
 
 	registerQuestionnaireTool(pi);
 
@@ -471,10 +481,40 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			executing: executionMode,
 			toolsBeforePlanMode,
 			lastPlanFile,
+			modelBeforePlanMode,
 		});
 	}
 
-	function togglePlanMode(ctx: ExtensionContext): void {
+	// Session-scoped model routing for plan mode: a stronger model plans, the
+	// pre-plan model executes. Both are no-ops when the target is already active
+	// or missing from the registry (model is registry-scoped, not a hard dep).
+	async function switchToPlanModel(ctx: ExtensionContext): Promise<void> {
+		const target = ctx.modelRegistry.find(PLAN_MODEL.provider, PLAN_MODEL.id);
+		if (!target) {
+			ctx.ui.notify(`Plan model not found: ${PLAN_MODEL.provider}/${PLAN_MODEL.id}`, "warning");
+			return;
+		}
+		if (ctx.model && ctx.model.provider === target.provider && ctx.model.id === target.id) return;
+		const ok = await pi.setModel(target);
+		if (ok) {
+			ctx.ui.notify(`Plan mode model: ${target.id}`);
+		} else {
+			ctx.ui.notify(`Could not switch to plan model ${PLAN_MODEL.id} (auth not configured)`, "warning");
+		}
+	}
+
+	async function restoreModelBeforePlan(ctx: ExtensionContext): Promise<void> {
+		const saved = modelBeforePlanMode;
+		modelBeforePlanMode = undefined;
+		if (!saved || (ctx.model && ctx.model.provider === saved.provider && ctx.model.id === saved.id)) return;
+		const target = ctx.modelRegistry.find(saved.provider, saved.id);
+		if (!target) return;
+		if (await pi.setModel(target)) {
+			ctx.ui.notify(`Model restored: ${target.id}`);
+		}
+	}
+
+	async function togglePlanMode(ctx: ExtensionContext): Promise<void> {
 		planModeEnabled = !planModeEnabled;
 		executionMode = false;
 		todoItems = [];
@@ -482,9 +522,12 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 
 		if (planModeEnabled) {
 			enablePlanModeTools();
+			if (ctx.model) modelBeforePlanMode = { provider: ctx.model.provider, id: ctx.model.id };
+			await switchToPlanModel(ctx);
 			ctx.ui.notify("Plan mode enabled. Built-in write tools disabled.");
 		} else {
 			restoreNormalModeTools();
+			await restoreModelBeforePlan(ctx);
 			ctx.ui.notify("Plan mode disabled. Full access restored.");
 		}
 		updateStatus(ctx);
@@ -736,6 +779,7 @@ Do not commit anything unless the user explicitly asks.${planFileLine}`,
 			planModeEnabled = false;
 			executionMode = true;
 			restoreNormalModeTools();
+			await restoreModelBeforePlan(ctx);
 			updateStatus(ctx);
 			persistState();
 
@@ -797,6 +841,7 @@ implementation, then simplify + final review. Small plans: implement inline, the
 			executionMode = planModeEntry.data.executing ?? executionMode;
 			toolsBeforePlanMode = planModeEntry.data.toolsBeforePlanMode ?? toolsBeforePlanMode;
 			lastPlanFile = planModeEntry.data.lastPlanFile ?? lastPlanFile;
+			modelBeforePlanMode = planModeEntry.data.modelBeforePlanMode ?? modelBeforePlanMode;
 		}
 
 		// On resume: re-scan messages to rebuild completion state
@@ -826,6 +871,14 @@ implementation, then simplify + final review. Small plans: implement inline, the
 		}
 
 		if (planModeEnabled) {
+			// Resume/flag-started plan mode: keep the persisted pre-plan model (set only if
+			// absent, so a resumed session doesn't clobber the original with the default),
+			// then re-apply the plan model — pi.setModel is session-scoped and sessions
+			// resume on the default model.
+			if (!modelBeforePlanMode && ctx.model) {
+				modelBeforePlanMode = { provider: ctx.model.provider, id: ctx.model.id };
+			}
+			await switchToPlanModel(ctx);
 			enablePlanModeTools();
 		}
 		updateStatus(ctx);

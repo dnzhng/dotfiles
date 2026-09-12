@@ -53,8 +53,8 @@ done
 
 # Symlink subagent files into ~/.pi/agent/agents, one symlink per agent .md.
 # Same conflict policy as extensions: a non-symlink destination is left alone.
-# These are Embassy-style model-routed agents (pinned cheap/appropriate model
-# per task type); see APPEND_SYSTEM.md for the routing rules the parent uses.
+# Optional workflow subagents (unpinned — children inherit the default model);
+# see APPEND_SYSTEM.md for when the parent delegates to them.
 echo "Symlinking pi agents..."
 mkdir -p "$PI_DIR/agents"
 for agent in "$SCRIPT_DIR/agents"/*.md; do
@@ -75,8 +75,8 @@ for agent in "$SCRIPT_DIR/agents"/*.md; do
     echo "  Linked $name"
 done
 
-# Symlink APPEND_SYSTEM.md (parent system-prompt append — hosts the routing
-# rules for the agents above) into ~/.pi/agent. Same conflict policy.
+# Symlink APPEND_SYSTEM.md (parent system-prompt append — model setup and
+# optional-subagent guidance) into ~/.pi/agent. Same conflict policy.
 echo "Symlinking pi APPEND_SYSTEM.md..."
 dest="$PI_DIR/APPEND_SYSTEM.md"
 src="$SCRIPT_DIR/APPEND_SYSTEM.md"

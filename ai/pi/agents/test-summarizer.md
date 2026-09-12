@@ -1,7 +1,6 @@
 ---
 name: test-summarizer
 description: Run one exact test or lint command the parent passes and summarize failures with file:line and likely cause. bash only.
-model: instacart-openai/gpt-5.6-luna
 tools: bash
 thinking: low
 systemPromptMode: replace

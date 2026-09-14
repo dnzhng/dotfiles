@@ -568,6 +568,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				"Read the plan file first — it has the context, approach, and full step detail. Then execute the steps in order, keeping changes surgical.",
 				"After completing a step, run its verify check, then include a [DONE:n] tag in your response.",
 				"Delegation: follow the plan's Multi-Agent Team Structure section if it has one — parallel implementation agents in separate worktrees for independent chunks, a parallel quality pass after implementation, then simplify + final review. Small plans: implement inline, then the quality pass.",
+				"Comment audit (always): as part of the review pass, dispatch the comment-sweeper subagent with the changed-file list so it strips over-added comments per the AGENTS.md zero-comment policy (it may edit files; give it a verify command such as the repo's type-check or lint).",
 				"Do not commit anything unless the user explicitly asks.",
 			].join("\n");
 
@@ -688,6 +689,8 @@ After completing a step, run its verify check, then include a [DONE:n] tag in yo
 Follow the plan's Multi-Agent Team Structure section when it has one: parallel implementation
 subagents in separate worktrees for independent chunks, then a parallel quality pass (review,
 silent-failure hunt, test coverage, lint/format), then simplify + a final staff-level review.
+Comment audit (always): as part of the review pass, dispatch the comment-sweeper subagent on the
+changed files so it strips over-added comments per the AGENTS.md zero-comment policy.
 Small plans without that section: implement inline, then the quality pass.
 Do not commit anything unless the user explicitly asks.${planFileLine}`,
 					display: false,
@@ -794,7 +797,9 @@ Start with: ${firstTodoItem.text}
 After completing a step, run its verify check, then include a [DONE:n] tag in your response.
 Delegation: follow the plan's Multi-Agent Team Structure section (full plan file below) — parallel
 implementation agents in separate worktrees for independent chunks, a parallel quality pass after
-implementation, then simplify + final review. Small plans: implement inline, then the quality pass.${planFileLine}`;
+implementation, then simplify + final review. Small plans: implement inline, then the quality pass.
+Comment audit (always): as part of the review pass, dispatch the comment-sweeper subagent with the
+changed-file list so it strips over-added comments per the AGENTS.md zero-comment policy.${planFileLine}`;
 			pi.sendMessage(
 				{ customType: "plan-mode-execute", content: execMessage, display: true },
 				{ triggerTurn: true, deliverAs: "followUp" },

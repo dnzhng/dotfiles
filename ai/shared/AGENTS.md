@@ -57,7 +57,7 @@ Do NOT format or lint files when exploring or reading them. Only format/lint fil
 
 - Use ES modules (import/export), not CommonJS (require)
 - Destructure imports when possible (e.g., `import { foo } from 'bar'`)
-- Default to zero code comments. Don't add prose comments unless the user explicitly asks for them. The only exceptions: (a) lint/type pragmas a tool requires (`eslint-disable-next-line`, `@ts-expect-error`, `biome-ignore`, etc.), (b) a single-line `TODO(<ticket>)` / `FIXME(<ticket>)` with a ticket link, and (c) one line documenting a workaround that can't be made obvious from the code — and even then, prefer a commit message or PR description. No multi-line prose comment blocks, no section banners, no narrating what the next lines do. Pre-existing comments stay unless your change orphans them.
+- Default to zero code comments. Don't add prose comments unless the user explicitly asks for them. The only exceptions: (a) lint/type pragmas a tool requires (`eslint-disable-next-line`, `@ts-expect-error`, `biome-ignore`, etc.), (b) a single-line `TODO(<ticket>)` / `FIXME(<ticket>)` with a ticket link, (c) one line documenting a workaround that can't be made obvious from the code — and even then, prefer a commit message or PR description, and (d) field-description comments in schema/typing files where that's the established file-wide pattern (e.g. Ruby schema definitions with a comment on each value describing what it defines) — in such files, follow the file's convention and document each field rather than the zero-comment default. No multi-line prose comment blocks, no section banners, no narrating what the next lines do. Pre-existing comments stay unless your change orphans them.
 
 # Git
 

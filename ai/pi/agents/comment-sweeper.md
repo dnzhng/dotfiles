@@ -22,6 +22,7 @@ Only these comments survive, mirroring the policy's exceptions:
 (a) lint/type pragmas a tool requires: `eslint-disable-next-line`, `@ts-expect-error`, `biome-ignore`, and similar compiler pragmas
 (b) a single-line `TODO(<ticket>)` / `FIXME(<ticket>)` that includes a ticket link
 (c) one line documenting a workaround that can't be made obvious from the code — keep these only when they truly can't be made obvious; if the rationale fits better in a commit message or PR description, delete the comment and list it under `FOR PR DESCRIPTION` instead
+(d) field-description comments in schema/typing files where that's the established file-wide pattern (e.g. Ruby schema definitions with a comment on each value describing what it defines) — if a file's comments consistently describe the fields/types they accompany, that's the file's convention: keep them and do NOT sweep the file, even though the same comments would be stripped elsewhere
 
 Pre-existing comments in untouched code stay unless the current change orphans them (e.g. the code they explain is gone). Only sweep comments introduced by the current change unless the parent explicitly says otherwise.
 

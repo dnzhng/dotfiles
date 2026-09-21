@@ -187,7 +187,14 @@ child into another repo. `/memory` shows the current match.
 simpler). Keys the base defines win; machine-local keys it doesn't define
 (`defaultProvider`, `defaultModel`, `enabledModels`, `lastChangelogVersion`,
 `tuiMode`) are preserved; `packages` is unioned so a package installed on one
-machine isn't dropped by the next install run. Deliberately NOT a symlink —
+machine isn't dropped by the next install run.
+
+`packages` only lists packages this repo owns (currently `npm:pi-subagents`).
+Some pi packages (`pi-web-access`, `@ff-labs/pi-fff`) are managed externally —
+they're merged into `~/.pi/agent/settings.json` as version-pinned entries by
+an outside installer/hook, and their updates flow through that channel, not
+`pi update`. Don't add them here unpinned: the union merge would create both
+forms and pi would load each package's extension twice. Deliberately NOT a symlink —
 pi rewrites settings.json at runtime, which would dirty the repo and leak
 machine-specific providers to machines that don't have them.
 

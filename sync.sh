@@ -178,8 +178,10 @@ for script in ai/shared ai/claude ai/pi tmux vim lazygit wezterm; do
     fi
 done
 
-# Update pi packages (npm:pi-subagents, etc.). pi skips already-current
-# packages, so this is a no-op when nothing changed. --no-approve keeps
+# Update pi packages (npm:pi-subagents, etc.). Externally managed packages
+# are version-pinned in settings.json and skipped by pi update — their updates
+# arrive through their own channel. pi skips already-current packages, so this
+# is a no-op when nothing changed. --no-approve keeps
 # project-local settings from whatever cwd sync was invoked in out of the
 # update (pi update never prompts, per pi docs).
 echo "== Updating pi extensions"

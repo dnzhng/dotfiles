@@ -51,6 +51,34 @@ for ext in "$SCRIPT_DIR/extensions"/*; do
     echo "  Linked $name"
 done
 
+# Symlink private-store extensions (private/ai/shared/pi/extensions — gitignored
+# repo, so machine-specific or internal-only extensions live there and are
+# skipped gracefully when the private store is absent). Same conflict policy as
+# the public loop above.
+PRIVATE_EXT_DIR="$SCRIPT_DIR/../../private/ai/shared/pi/extensions"
+if [ -d "$PRIVATE_EXT_DIR" ]; then
+    echo "Symlinking private pi extensions..."
+    for ext in "$PRIVATE_EXT_DIR"/*; do
+        [ -e "$ext" ] || continue
+        name=$(basename "$ext")
+        dest="$PI_DIR/extensions/$name"
+        if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$ext" ]; then
+            echo "  Already linked $name (private)"
+            continue
+        fi
+        if [ -L "$dest" ]; then
+            rm -f "$dest"
+        elif [ -e "$dest" ]; then
+            echo "  Skipped $name (exists, not a dotfiles symlink — leaving it alone)"
+            continue
+        fi
+        ln -s "$ext" "$dest"
+        echo "  Linked $name (private)"
+    done
+else
+    echo "Skipped private pi extensions (no private store found)"
+fi
+
 # Symlink subagent files into ~/.pi/agent/agents, one symlink per agent .md.
 # Same conflict policy as extensions: a non-symlink destination is left alone.
 # Optional workflow subagents (unpinned — children inherit the default model);

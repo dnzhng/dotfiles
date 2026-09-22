@@ -180,6 +180,25 @@ index for their own cwd (cross-repo recall); fork-context children inherit
 the parent's system prompt instead — use fresh context when spawning a
 child into another repo. `/memory` shows the current match.
 
+`extensions/live-share/` (private overlay, `private/ai/shared/pi/extensions/`) — shares the current pi session with a coworker
+through the Bento Remote coworker URL (`http://<bento-host>.carro.ts.net/#token=<secret>`),
+backed by Tailscale Serve on Bento Remote — never Funnel. Two modes: **direct**
+(pi runs inside Bento Remote → Serve straight to the loopback session server)
+and **via-bento** (pi runs locally → SSH reverse tunnel into Bento Remote →
+Serve proxies to the remote loopback tunnel port; prompts travel back through
+the tunnel and execute on the local machine). the command is `/collab`
+(pi's built-in gist share keeps `/share`); it auto-detects the mode
+(via `bento remote show`'s instance IP matching this host — reliable even
+where `BENTO_IS_REMOTE` isn't set — else `bento remote status` locally) and
+`/collab direct|via-bento|status|stop` force it. Bearer-gated APIs, loopback-only
+bindings, bounded inert-text projection, foreign Serve state preserved,
+fingerprint-gated cleanup. Security model, the confirmed bento
+reverse-forward contract (`--args` pass-through, port 1749 reserved for
+tether), and crash/stale-route recovery are documented in
+`private/ai/shared/pi/extensions/live-share/README.md` — read it
+before the first share; anyone with the bearer link can prompt, and prompts
+may run tools on the originating machine.
+
 ## Settings
 
 `settings.base.json` — portable preferences, merged into

@@ -1,8 +1,8 @@
 ---
 name: comment-sweeper
 description: Audit and clean up over-added comments in code. The parent passes file paths (or the changed-file list from a diff) and the sweeper enforces the AGENTS.md zero-comment policy (keep only lint pragmas, ticketed TODO/FIXME, one-line workarounds). edit + bash (verify) only.
-model: open-weights/deepseek-v4p1-flash
 tools: bash, edit
+model: open-weights/deepseek-v4p1-flash-priority
 thinking: low
 systemPromptMode: replace
 inheritProjectContext: false

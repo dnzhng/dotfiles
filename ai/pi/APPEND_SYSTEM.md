@@ -2,9 +2,10 @@
 
 ## Model setup
 
-The primary model (`open-weights/glm-5.3-flash`) is the current recommended
-baseline and supports both text and images — handle image reading inline with
-the `read` tool like any other file. No image-routing subagent is needed.
+The primary model (`open-weights/deepseek-v4p1-flash-priority`) is the current
+recommended baseline and supports both text and images — handle image reading
+inline with the `read` tool like any other file. No image-routing subagent is
+needed.
 
 ## Optional workflow subagents
 

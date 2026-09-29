@@ -34,6 +34,10 @@ One-time permissions:
   [skhd/README](skhd).
 - First *hide*: macOS prompts to let the script control System Events → OK.
 
+⌥space dead? Run `wezterm/skhd/doctor.sh` (`--fix` restarts skhd when it's
+safe). The usual cause is another app holding Secure Keyboard Entry — see
+[skhd/README → Troubleshooting](skhd#troubleshooting).
+
 Behavior: not running → launch; frontmost → hide; otherwise → unhide + focus.
 Detection is shell-based (`pgrep` / `lsappinfo`) instead of System Events
 queries, so a press costs ~100–200ms vs ~0.5–1.5s for the old Automator

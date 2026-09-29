@@ -76,6 +76,35 @@ Checks:
 - Daemon state: `launchctl list | grep skhd` (PID in column 1 = alive) and
   `launchctl print gui/$UID/com.koekeishiya.skhd | grep -E 'state|runs|pid|last exit'`.
 
+### When it stays on: a leaked Secure Keyboard Entry
+
+Secure input is a **per-app reference count**: an app calls
+`EnableSecureEventInput()` while a password field has focus and is supposed to
+call `DisableSecureEventInput()` when focus moves on. Apps leak that count —
+Firefox shipped exactly this bug (Mozilla 2050794: submitting a password form,
+or closing a popup/window that held one) — and per Apple's TN2150 *one* leaked
+count mutes every event tap, HID seize and `GetKeys` in the session for as long
+as the owning process lives, focused or not.
+
+What that means for this hotkey:
+
+- **Nothing outside the owning process can clear it.**
+  `CGSSetSecureEventInput` (what loginwindow uses) is refused for unprivileged
+  processes — verified: it returns `0x10000003` — and enable/disable from
+  another process only touches that process's own reference count.
+- The pid macOS reports (`kCGSSessionSecureInputPID` — what the err log and
+  `doctor.sh` print) is only the **frontmost app**, not the leaker. Verified by
+  switching apps while stuck: 1584 Arc → 1590 WezTerm → 1620 Finder. Don't
+  chase that pid.
+- Fixes, cheapest first: deactivate/quit the candidate app (browsers leak it
+  most; Arc restores its tabs), then log out/in. The hotkey needs no restart —
+  the tap resumes the moment the count reaches zero.
+- `wezterm/skhd/watch-secure-input.sh` logs every transition with the frontmost
+  app, each terminal's foreground process (a waiting password prompt shows up
+  there) and the newest pids, so the next leak names its culprit.
+- While it is stuck, ⌘Tab / the Dock still work — only event-tap hotkeys are
+  muted by design.
+
 ### Other failure modes
 
 - Daemon alive, secure input off, key still dead: the event tap is wedged or

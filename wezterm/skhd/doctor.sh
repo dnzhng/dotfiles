@@ -4,9 +4,9 @@
 #   wezterm/skhd/doctor.sh          # diagnose
 #   wezterm/skhd/doctor.sh --fix    # also restart skhd, when that's safe
 #
-# The usual reason the hotkey dies is Secure Keyboard Entry: macOS mutes every
-# event tap while another app holds it, and skhd exits immediately if it *starts*
-# in that state. See README.md → Troubleshooting for the full failure modes.
+# Two things kill this hotkey, both living in README.md → Troubleshooting:
+# Secure Keyboard Entry (macOS mutes every event tap while any app holds it, and
+# skhd exits if it *starts* in that state) and a daemon that isn't running.
 set -uo pipefail
 
 LABEL="com.koekeishiya.skhd"
@@ -30,14 +30,15 @@ for arg in "$@"; do
 	esac
 done
 
-DEGRADED=""
+DEGRADED=()
 note() { printf '  %-14s %s\n' "$1" "$2"; }
-degrade() { DEGRADED="$DEGRADED$1"$'\n'; }
+degrade() { DEGRADED+=("$1"); }
 
-# Secure Keyboard Entry state: prints the holding pid, "unknown" if the session
-# dictionary can't resolve it, or nothing when it's off. Carbon +
-# CGSCopyCurrentSessionDictionary are the only reliable source (on/off); ioreg
-# does not expose it.
+# Secure Keyboard Entry state: prints the pid macOS attributes it to, "unknown"
+# if that can't be resolved, or nothing when it's off. Carbon +
+# CGSCopyCurrentSessionDictionary are the only reliable read; ioreg shows
+# nothing (both verified). Beware: the pid is only the *frontmost* app, not
+# necessarily the process that enabled secure input.
 secure_input_pid() {
 	/usr/bin/python3 - <<'PY' 2>/dev/null
 import ctypes
@@ -108,12 +109,11 @@ fi
 SEC_PID="$(secure_input_pid)"
 HOLDER=""
 if [ -n "$SEC_PID" ]; then
+	# An app (not necessarily this one) leaked its secure-input reference count.
 	HOLDER="$(ps -p "$SEC_PID" -o comm= 2>/dev/null || true)"
-	note "secure input" "ON — held by pid $SEC_PID ${HOLDER:+($HOLDER)}"
-	degrade "secure input is held; ⌥space cannot fire until it is released"
-elif [ "$SEC_PID" = "unknown" ]; then
-	note "secure input" "ON — holder could not be resolved"
-	degrade "secure input is held; ⌥space cannot fire until it is released"
+	note "secure input" "ON — macOS mutes every event tap while any app holds it"
+	note "attributed to" "${HOLDER:-pid $SEC_PID} — just the frontmost app, not necessarily the leaker"
+	degrade "secure input is stuck ON; ⌥space stays muted until the owning app releases it"
 else
 	note "secure input" "off"
 fi
@@ -123,24 +123,33 @@ if [ -s "$ERR_LOG" ]; then
 	note "" "($ERR_LOG, modified $(stat -f '%Sm' -t '%H:%M:%S' "$ERR_LOG"))"
 fi
 
-if [ -n "$DEGRADED" ]; then
+if [ "${#DEGRADED[@]}" -gt 0 ]; then
 	echo
 	echo "Problems:"
-	printf '  • %s\n' $DEGRADED
+	for msg in "${DEGRADED[@]}"; do printf '  • %s\n' "$msg"; done
+fi
+
+if [ -n "$SEC_PID" ]; then
+	echo
+	echo "Secure Keyboard Entry is a per-app reference count (Apple TN2150): only the"
+	echo "app that enabled it can release it, so nothing outside that process clears"
+	echo "it — CGSSetSecureEventInput is refused for unprivileged processes (verified)."
+	echo "Deactivate/quit the candidate app (browsers leak it most: submitting or"
+	echo "closing a password form), or log out; the tap resumes the moment it clears."
+	echo "To catch the culprit next time: wezterm/skhd/watch-secure-input.sh"
 fi
 
 if [ -z "$FIX" ]; then
 	echo
 	echo "Restart it (only when secure input is off): $0 --fix"
-	[ -z "$DEGRADED" ] || exit 1
+	[ "${#DEGRADED[@]}" -eq 0 ] || exit 1
 	exit 0
 fi
 
 echo
 if [ -n "$SEC_PID" ]; then
-	echo "Not restarting: ${HOLDER:-pid $SEC_PID} holds Secure Keyboard Entry."
-	echo "skhd would log '...abort..' and exit — release it (finish the password"
-	echo "prompt / unlock / quit the app) and re-run $0 --fix."
+	echo "Not restarting: Secure Keyboard Entry is held, so a start would only log"
+	echo "'...abort..' and exit (see above). Release it first, then re-run --fix."
 	exit 1
 fi
 

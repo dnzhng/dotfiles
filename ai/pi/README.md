@@ -62,24 +62,32 @@ is capped instead (scrollbar stays at the terminal's right edge). Any
 structural surprise in regular mode falls back to stock full-width rendering.
 Idempotent, re-applies on `/reload`.
 
-`extensions/mcp/` — connects pi to MCP servers, reading
-`~/.pi/agent/mcp-servers.json` at runtime (a symlink to the canonical
-dotfiles MCP store, created by the store's install.sh; `$PI_MCP_SERVERS`
-overrides the path). The extension itself carries no machine-specific paths.
-`{{MCP_USHER_PORT}}` resolution and project-key cwd matching mirror the
-store's install.sh; config is re-read on every `session_start`, so `/reload`
-picks up edits. MCP tools
-register as `mcp__<server>__<tool>` but stay INACTIVE — the always-active
-`mcp_search` tool finds and enables matches mid-turn via pi's dynamic tool
-loading, so the full catalog (~100 tools across glean, atlassian,
-google-workspace, wittycart, playwright) never bloats the context.
-Connections are session-scoped: background connect on `session_start`
-(startup never blocks on usher/VPN), close on `session_shutdown`, one
-transparent reconnect on a failed call. `/mcp` posts a TUI-only status table
-(not sent to the LLM); `/mcp reconnect [server]` retries. Requires
-`npm install` in the directory once (`@modelcontextprotocol/sdk`;
-`node_modules/` is gitignored). Known server-side limitation, same as
-claude: `figma-desktop` hangs unless the Figma desktop app is running.
+MCP servers are split between pi's built-in MCP extension (`builtin:mcp`) and
+`extensions/mcp-projects/`. The canonical dotfiles MCP store
+(`private/ai/shared/mcp/servers.json`) is installed by the store's install.sh
+(itself run from `ai/claude/install.sh`), which generates both configs per-
+machine:
+
+- `~/.pi/agent/mcp.json` — global servers, `{{MCP_USHER_PORT}}` resolved.
+  builtin:mcp connects them, serves `pi mcp` CLI + the `/mcp` TUI manager
+  (sign-in, enable/disable, exposure, reconnect), and handles tool naming
+  (`mcp__<server>__<tool>`), retries, OAuth, and resources. Dotfiles are
+  authoritative for server names they define; servers added with `pi mcp add`
+  and `/mcp` changes to a store-defined server's `exposure`/`enabled` survive
+  regenerating the file.
+- `~/.pi/agent/mcp-projects.json` — project-keyed servers (carrot:
+  figma-desktop, playwright). `extensions/mcp-projects/` reads it on every
+  `session_start`, matches keys by dash-joined trailing path segments
+  ("carrot" matches anywhere in a `.../carrot/` tree, graft worktrees
+  included), and registers matches with `pi.registerMcpServer()`;
+  `$PI_MCP_PROJECTS` overrides the path. The extension carries no
+  machine-specific paths and needs no npm install.
+
+Both files are generated with `"exposure": "deferred"`, so tools surface
+through the built-in `tool_search` on demand instead of the default
+`codemode` scripts; switch a server to codemode in `/mcp` to opt out. Known
+server-side limitation, same as claude: `figma-desktop` hangs unless the
+Figma desktop app is running.
 
 `extensions/dotfiles.ts` — startup out-of-date check + `/sync` command for
 the dotfiles repo. Repo root: `$DOTFILES_DIR`, else the first of

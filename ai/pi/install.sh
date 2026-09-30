@@ -51,6 +51,13 @@ for ext in "$SCRIPT_DIR/extensions"/*; do
     echo "  Linked $name"
 done
 
+# The pre-migration MCP extension was replaced by pi's built-in MCP support
+# plus mcp-projects; drop its now-dangling symlink.
+if [ -L "$PI_DIR/extensions/mcp" ] && [ ! -e "$PI_DIR/extensions/mcp" ]; then
+    rm -f "$PI_DIR/extensions/mcp"
+    echo "  Removed stale mcp extension symlink"
+fi
+
 # Symlink private-store extensions (private/ai/shared/pi/extensions — gitignored
 # repo, so machine-specific or internal-only extensions live there and are
 # skipped gracefully when the private store is absent). Same conflict policy as

@@ -66,6 +66,12 @@ const WIDGET_KEY = "side-panel-capture";
 // LEFT_PAD, TOP_PADDING) is unchanged.
 const SEPARATOR = "│";
 
+// #1c222b — must match box-editor.ts's EDITOR_BG so the overlay matches the input panel.
+const OVERLAY_BG = "\x1b[48;2;28;34;43m";
+const BG_RESET = "\x1b[49m";
+const withBg = (s: string): string =>
+	OVERLAY_BG + s.replace(/(\x1b\[(?:0|39|49)m)/g, `$1${OVERLAY_BG}`) + BG_RESET;
+
 type UiContext = ExtensionContext;
 type Theme = ExtensionContext["ui"]["theme"];
 
@@ -302,11 +308,18 @@ function oneLine(text: string): string {
 	return text.replace(/\s+/g, " ").trim();
 }
 
-/** Parse a pi session JSONL tail into plain transcript lines (roles + tool calls). */
-function transcriptLines(sessionFile: string): string[] {
+/** One transcript row: `thinking` marks reasoning blocks so the overlay can
+ * filter them (the `t` toggle) and style them apart from text. */
+interface TranscriptLine {
+	text: string;
+	thinking?: true;
+}
+
+/** Parse a pi session JSONL tail into transcript lines (roles, text, thinking, tool calls). */
+function transcriptLines(sessionFile: string): TranscriptLine[] {
 	const text = readTail(sessionFile, 64 * 1024);
 	if (!text) return [];
-	const out: string[] = [];
+	const out: TranscriptLine[] = [];
 	for (const line of text.split("\n")) {
 		let entry: { type?: string; message?: Record<string, unknown> };
 		try {
@@ -332,19 +345,31 @@ function transcriptLines(sessionFile: string): string[] {
 								.map((b) => (b as { text?: string }).text ?? "")
 								.join(" ")
 						: "";
-			if (text.trim()) out.push(`user: ${oneLine(text)}`);
+			if (text.trim()) out.push({ text: `user: ${oneLine(text)}` });
 		} else if (msg.role === "assistant" && Array.isArray(msg.content)) {
 			for (const block of msg.content) {
-				const b = block as { type?: string; text?: string; name?: string; arguments?: unknown; input?: unknown };
+				const b = block as {
+					type?: string;
+					text?: string;
+					thinking?: string;
+					name?: string;
+					arguments?: unknown;
+					input?: unknown;
+				};
 				if (b.type === "text" && b.text?.trim()) {
-					out.push(`agent: ${oneLine(b.text)}`);
+					out.push({ text: `agent: ${oneLine(b.text)}` });
+				} else if (b.type === "thinking") {
+					// Some models persist redacted reasoning with no text — skip it rather
+					// than emit a bare "thinking:" row.
+					const thought = oneLine(typeof b.thinking === "string" ? b.thinking : "");
+					if (thought) out.push({ text: thought, thinking: true });
 				} else if (b.type === "toolCall") {
 					const args = oneLine(JSON.stringify(b.arguments ?? b.input ?? "")).slice(0, 100);
-					out.push(`  (tool) ${b.name ?? "?"} ${args}`);
+					out.push({ text: `  (tool) ${b.name ?? "?"} ${args}` });
 				}
 			}
 		} else if (msg.role === "toolResult") {
-			out.push(`  -> ${msg.toolName ?? "tool"}${msg.isError ? " (error)" : ""}`);
+			out.push({ text: `  -> ${msg.toolName ?? "tool"}${msg.isError ? " (error)" : ""}` });
 		}
 	}
 	return out;
@@ -578,8 +603,12 @@ export default function sidePanelExtension(pi: ExtensionAPI): void {
 				(overlayTui, theme, _kb, done) => {
 					let status: RunStatusLite = readRunStatus(row.statusPath) ?? row.status;
 					let body = transcriptLines(sessionOf(status) ?? "");
+					let showThinking = true;
 					let offset = Number.POSITIVE_INFINITY; // tail-follow until the user scrolls
 					let cached: string[] | undefined;
+					// Wrapping depends on the overlay width, so the cache is keyed on it
+					// (a resize re-wraps and re-clamps the scroll offset).
+					let cachedWidth = 0;
 					const liveTimer = setInterval(() => {
 						status = readRunStatus(row.statusPath) ?? status;
 						body = transcriptLines(sessionOf(status) ?? "");
@@ -594,6 +623,7 @@ export default function sidePanelExtension(pi: ExtensionAPI): void {
 						const pairs: Array<[string, string | undefined]> = [
 							["run", row.id],
 							["step", step ? (step.label ?? step.agent) : undefined],
+							["model", step?.model],
 							["state", step?.status ?? status.state],
 							["mode", status.mode],
 							["elapsed", started ? elapsed(Date.now(), started) : undefined],
@@ -609,22 +639,43 @@ export default function sidePanelExtension(pi: ExtensionAPI): void {
 					}
 
 					function render(width: number): string[] {
-						if (!cached) {
-							const hdr = header();
+						const contentWidth = Math.max(1, width - 2);
+						if (!cached || cachedWidth !== width) {
+							cachedWidth = width;
+							const hdr = header().map((l) => truncateToWidth(l, contentWidth));
 							const totalRows = Math.max(8, Math.floor((process.stdout.rows || 40) * 0.8));
 							const bodyRows = Math.max(3, totalRows - hdr.length - 3);
-							const maxOffset = Math.max(0, body.length - bodyRows);
+							const rows = body
+								.filter((l) => showThinking || !l.thinking)
+								.flatMap((l) =>
+									wrapTextWithAnsi(
+										l.thinking ? theme.italic(theme.fg("thinkingText", `thinking: ${l.text}`)) : l.text,
+										contentWidth,
+									),
+								);
+							const maxOffset = Math.max(0, rows.length - bodyRows);
 							offset = Math.min(offset, maxOffset);
-							const visible = body.slice(offset, offset + bodyRows);
-							const position = body.length > bodyRows ? ` · ${offset + 1}-${offset + visible.length}/${body.length}` : "";
+							const visible = rows.slice(offset, offset + bodyRows);
+							const position =
+								rows.length > bodyRows ? ` · ${offset + 1}-${offset + visible.length}/${rows.length}` : "";
+							const placeholder =
+								body.length > 0 ? "(thinking hidden — press t)" : "(no transcript on disk)";
 							cached = [
 								...hdr,
-								theme.fg("dim", "─".repeat(Math.min(width, 60))),
-								...(visible.length > 0 ? visible : [theme.fg("dim", "(no transcript on disk)")]),
-								theme.fg("dim", `↑↓/jk scroll · pgup/pgdn · esc close${position}`),
+								theme.fg("dim", "─".repeat(Math.min(contentWidth, 60))),
+								...(visible.length > 0 ? visible : [theme.fg("dim", placeholder)]),
+								theme.fg("dim", `↑↓/jk scroll · pgup/pgdn · t thinking · esc close${position}`),
 							];
 						}
-						return cached.map((l) => truncateToWidth(l, width));
+						const margin = " ";
+						return cached.map((l) =>
+							withBg(
+								truncateToWidth(
+									margin + l + " ".repeat(Math.max(0, contentWidth - visibleWidth(l))) + margin,
+									width,
+								),
+							),
+						);
 					}
 
 					function scrollBy(delta: number): void {
@@ -649,6 +700,11 @@ export default function sidePanelExtension(pi: ExtensionAPI): void {
 								scrollBy(-10);
 							} else if (matchesKey(data, "pageDown")) {
 								scrollBy(10);
+							} else if (matchesKey(data, "t")) {
+								showThinking = !showThinking;
+								offset = Number.POSITIVE_INFINITY;
+								cached = undefined;
+								overlayTui.requestRender();
 							}
 						},
 						dispose: () => clearInterval(liveTimer),

@@ -7,7 +7,7 @@
  * Features:
  * - /plan command or Ctrl+Alt+P to toggle
  * - Model routing: entering plan mode switches the session to a stronger planning
- *   model (gpt-5.6-sol) and leaving/executing restores the previous model —
+ *   model (claude-opus-5-5) and leaving/executing restores the previous model —
  *   session-scoped via pi.setModel, so the configured default is untouched
  * - Per-plan execution target: the post-plan menu can pin the model and thinking level
  *   used to execute this plan, independent of the planning model; cleared when plan
@@ -110,7 +110,7 @@ interface PlanModeState {
 }
 
 // Model used while plan mode is active (session-scoped switch; restored on exit).
-const PLAN_MODEL = { provider: "instacart-openai", id: "gpt-5.6-sol" } as const;
+const PLAN_MODEL = { provider: "instacart-anthropic", id: "claude-opus-5-5@default" } as const;
 
 // Type guard for assistant messages
 function isAssistantMessage(m: AgentMessage): m is AssistantMessage {

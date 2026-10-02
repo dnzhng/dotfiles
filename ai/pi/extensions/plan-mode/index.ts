@@ -9,6 +9,9 @@
  * - Model routing: entering plan mode switches the session to a stronger planning
  *   model (gpt-5.6-sol) and leaving/executing restores the previous model —
  *   session-scoped via pi.setModel, so the configured default is untouched
+ * - Per-plan execution target: the post-plan menu can pin the model and thinking level
+ *   used to execute this plan, independent of the planning model; cleared when plan
+ *   mode is toggled or a new plan starts
  * - Bash restricted to allowlisted read-only commands
  * - Extracts numbered plan steps from "Plan:" sections
  * - [DONE:n] markers to complete steps during execution
@@ -58,7 +61,14 @@ import { existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
+import {
+	getSupportedThinkingLevels,
+	type Api,
+	type AssistantMessage,
+	type Model,
+	type ModelThinkingLevel,
+	type TextContent,
+} from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Key } from "@earendil-works/pi-tui";
 import { getBus, publishBus } from "../side-panel/bus.ts";
@@ -83,6 +93,12 @@ const PLAN_MANAGED_TOOLS = new Set<string>([...PLAN_MODE_TOOLS, ...NORMAL_MODE_T
 // Prefix of the user message sent by the "Refine the plan" flow — signals an in-place plan update
 const REFINE_MARKER = "[PLAN MODE - REFINE THE PLAN]";
 
+interface ExecutionConfig {
+	provider: string;
+	id: string;
+	thinkingLevel: ModelThinkingLevel;
+}
+
 interface PlanModeState {
 	enabled: boolean;
 	todos?: TodoItem[];
@@ -90,6 +106,7 @@ interface PlanModeState {
 	toolsBeforePlanMode?: string[];
 	lastPlanFile?: string;
 	modelBeforePlanMode?: { provider: string; id: string };
+	executionConfig?: ExecutionConfig;
 }
 
 // Model used while plan mode is active (session-scoped switch; restored on exit).
@@ -281,9 +298,12 @@ async function cleanupExpiredPlans(ctx: ExtensionContext): Promise<void> {
 	}
 }
 
+const CONFIGURE_EXECUTION_ACTION = "Configure execution model & thinking";
+
 const PLAN_ACTIONS = [
 	"Execute the plan (track progress)",
 	"Execute in a fresh session (clear context)",
+	CONFIGURE_EXECUTION_ACTION,
 	"Stay in plan mode",
 	"Refine the plan",
 ] as const;
@@ -294,14 +314,15 @@ const PLAN_ACTIONS = [
  * (Esc / narrow-resize resolve undefined = stay, matching the select-cancel path).
  * Otherwise fall back to the stock editor-replacing select.
  */
-function selectPlanAction(ctx: ExtensionContext): Promise<string | undefined> {
+function selectPlanAction(ctx: ExtensionContext, executionLabel: string): Promise<string | undefined> {
+	const title = `Plan mode - what next? [execute with ${executionLabel}]`;
 	if (!getBus().capable) {
-		return ctx.ui.select("Plan mode - what next?", [...PLAN_ACTIONS]);
+		return ctx.ui.select(title, [...PLAN_ACTIONS]);
 	}
 	return new Promise<string | undefined>((resolve) => {
 		publishBus({
 			menu: {
-				title: "Plan mode - what next?",
+				title,
 				options: [...PLAN_ACTIONS],
 				resolve: (choice) => {
 					// Clear before resolving so the sidebar drops the menu immediately.
@@ -399,6 +420,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	let toolsBeforePlanMode: string[] | undefined;
 	let lastPlanFile: string | undefined;
 	let modelBeforePlanMode: { provider: string; id: string } | undefined;
+	let executionConfig: ExecutionConfig | undefined;
 
 	registerQuestionnaireTool(pi);
 
@@ -482,6 +504,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			toolsBeforePlanMode,
 			lastPlanFile,
 			modelBeforePlanMode,
+			executionConfig,
 		});
 	}
 
@@ -514,11 +537,84 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		}
 	}
 
+	function executionLabel(): string {
+		return executionConfig
+			? `${executionConfig.provider}/${executionConfig.id} @ ${executionConfig.thinkingLevel}`
+			: "pre-plan model";
+	}
+
+	function resolveExecutionModel(ctx: ExtensionContext): Model<Api> | undefined {
+		if (!executionConfig) return undefined;
+		const target = ctx.modelRegistry.find(executionConfig.provider, executionConfig.id);
+		if (!target) {
+			ctx.ui.notify(`Execution model not found: ${executionConfig.provider}/${executionConfig.id}`, "warning");
+			return undefined;
+		}
+		if (!getSupportedThinkingLevels(target).includes(executionConfig.thinkingLevel)) {
+			ctx.ui.notify(
+				`${target.id} no longer supports thinking level ${executionConfig.thinkingLevel} — reconfigure or reset the execution model.`,
+				"warning",
+			);
+			return undefined;
+		}
+		if (!ctx.modelRegistry.getAvailable().some((m) => m.provider === target.provider && m.id === target.id)) {
+			ctx.ui.notify(
+				`Execution model ${target.id} is unavailable (authentication not configured) — reconfigure or reset the execution model.`,
+				"warning",
+			);
+			return undefined;
+		}
+		return target;
+	}
+
+	async function applyExecutionConfig(ctx: ExtensionContext): Promise<boolean> {
+		if (!executionConfig) {
+			await restoreModelBeforePlan(ctx);
+			return true;
+		}
+		const target = resolveExecutionModel(ctx);
+		if (!target) return false;
+		if (!(await pi.setModel(target))) {
+			ctx.ui.notify(`Could not switch to execution model ${target.id} (auth not configured)`, "warning");
+			return false;
+		}
+		pi.setThinkingLevel(executionConfig.thinkingLevel);
+		modelBeforePlanMode = undefined;
+		return true;
+	}
+
+	async function configureExecution(ctx: ExtensionContext): Promise<void> {
+		const models = ctx.modelRegistry.getAvailable();
+		if (models.length === 0) {
+			ctx.ui.notify("No models available — cannot configure execution.", "warning");
+			return;
+		}
+		const resetLabel = "(reset to the pre-plan model)";
+		const labels = models.map((m) => `${m.provider}/${m.id}`);
+		const current = executionConfig ? ` — current: ${executionLabel()}` : "";
+		const choice = await ctx.ui.select(`Execution model${current}`, [resetLabel, ...labels]);
+		if (choice === undefined) return;
+		if (choice === resetLabel) {
+			executionConfig = undefined;
+			ctx.ui.notify("Execution will use the pre-plan model.", "info");
+			return;
+		}
+		const model = models.find((m) => `${m.provider}/${m.id}` === choice);
+		if (!model) return;
+		const level = await ctx.ui.select(`Thinking level for ${model.provider}/${model.id}`, [
+			...getSupportedThinkingLevels(model),
+		]);
+		if (level === undefined) return;
+		executionConfig = { provider: model.provider, id: model.id, thinkingLevel: level as ModelThinkingLevel };
+		ctx.ui.notify(`Execution: ${executionLabel()}`, "info");
+	}
+
 	async function togglePlanMode(ctx: ExtensionContext): Promise<void> {
 		planModeEnabled = !planModeEnabled;
 		executionMode = false;
 		todoItems = [];
 		lastPlanFile = undefined;
+		executionConfig = undefined;
 
 		if (planModeEnabled) {
 			enablePlanModeTools();
@@ -557,10 +653,14 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify("Plan isn't saved to disk — fresh-session execution needs the plan file.", "warning");
 				return;
 			}
+			// Validate before replacing the session: the fresh instance applies the target from
+			// the seeded entry, and an unusable target must not launch execution.
+			if (executionConfig && !resolveExecutionModel(ctx)) return;
 
 			// Plain data only — captured session-bound objects are stale after replacement.
 			const todos = todoItems.map((t) => ({ ...t }));
 			const planFile = lastPlanFile;
+			const config = executionConfig ? { ...executionConfig } : undefined;
 			const parentSession = ctx.sessionManager.getSessionFile();
 			const kickoff = [
 				`Execute the plan saved at: ${planFile}`,
@@ -582,6 +682,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 						todos,
 						executing: true,
 						lastPlanFile: planFile,
+						executionConfig: config,
 					});
 				},
 				withSession: async (freshCtx) => {
@@ -760,7 +861,14 @@ Do not commit anything unless the user explicitly asks.${planFileLine}`,
 		if (todoItems.length === 0) return;
 		persistState();
 
-		const choice = await selectPlanAction(ctx);
+		let choice = await selectPlanAction(ctx, executionLabel());
+		// Configuring the execution target is a menu round-trip: persist and re-open so the
+		// user can see the new target and pick an action in the same flow.
+		while (choice === CONFIGURE_EXECUTION_ACTION) {
+			await configureExecution(ctx);
+			persistState();
+			choice = await selectPlanAction(ctx, executionLabel());
+		}
 
 		if (choice?.startsWith("Execute in a fresh")) {
 			// The fresh session operates off the plan file alone — require it to exist on disk.
@@ -778,11 +886,13 @@ Do not commit anything unless the user explicitly asks.${planFileLine}`,
 		if (choice?.startsWith("Execute")) {
 			const firstTodoItem = todoItems[0];
 			if (!firstTodoItem) return;
+			// Apply the target first: an unusable one leaves the user in plan mode (menu
+			// still available) instead of executing on an unintended model.
+			if (!(await applyExecutionConfig(ctx))) return;
 
 			planModeEnabled = false;
 			executionMode = true;
 			restoreNormalModeTools();
-			await restoreModelBeforePlan(ctx);
 			updateStatus(ctx);
 			persistState();
 
@@ -828,7 +938,7 @@ changed-file list so it strips over-added comments per the AGENTS.md zero-commen
 	});
 
 	// Restore state on session start/resume
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		if (pi.getFlag("plan") === true) {
 			planModeEnabled = true;
 		}
@@ -847,6 +957,7 @@ changed-file list so it strips over-added comments per the AGENTS.md zero-commen
 			toolsBeforePlanMode = planModeEntry.data.toolsBeforePlanMode ?? toolsBeforePlanMode;
 			lastPlanFile = planModeEntry.data.lastPlanFile ?? lastPlanFile;
 			modelBeforePlanMode = planModeEntry.data.modelBeforePlanMode ?? modelBeforePlanMode;
+			executionConfig = planModeEntry.data.executionConfig ?? executionConfig;
 		}
 
 		// On resume: re-scan messages to rebuild completion state
@@ -885,6 +996,11 @@ changed-file list so it strips over-added comments per the AGENTS.md zero-commen
 			}
 			await switchToPlanModel(ctx);
 			enablePlanModeTools();
+		} else if (event.reason === "new" && executionMode && executionConfig) {
+			// Fresh-session execute: the replacement session starts on the default model, so
+			// apply the per-plan target here (before the kickoff message). Resumes and reloads
+			// skip this, so a manual model change mid-execution is respected.
+			await applyExecutionConfig(ctx);
 		}
 		updateStatus(ctx);
 		await cleanupExpiredPlans(ctx);

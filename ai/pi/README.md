@@ -169,6 +169,20 @@ per-project memory folders); `$PI_AGENT_STORE` overrides, resolved as `<root>/me
 is referenced during execution, so plans stay referenceable across sessions
 and harnesses without living in context.
 
+`extensions/subagent/config.json` — config for the `pi-subagents` package
+extension (it reads `~/.pi/agent/extensions/subagent/config.json`, which
+install.sh creates by symlinking this whole directory). `fleetView` and
+`asyncWidget` are off — subagent visibility is owned by the
+`extensions/side-panel/` sidebar instead. `forceTopLevelAsync: true`
+rewrites every depth-0 `subagent` tool call — even an explicit
+`async: false` — into a background run, so runs always write `status.json`
+and appear in the side-panel Agents list (foreground runs are in-memory
+only and can't be shown there); the parent is woken natively with the
+result instead of blocking. Note this also forces `clarify: false`. If a
+genuinely blocking top-level run is ever needed, the only escape is
+removing the flag (then `/reload`) or a `foregroundOnly` agent — no
+per-call override exists at depth 0.
+
 `extensions/memory.ts` — injects the cwd project's long-term memory index
 (`MEMORY.md`) into the system prompt, mirroring Claude Code's per-project
 auto-memory. Store: `~/.pi/agent/memory` (install.sh symlinks it to

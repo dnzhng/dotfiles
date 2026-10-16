@@ -1,4 +1,5 @@
 {
   "fleetView": false,
-  "asyncWidget": false
+  "asyncWidget": false,
+  "forceTopLevelAsync": true
 }

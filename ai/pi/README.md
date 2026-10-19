@@ -108,6 +108,28 @@ calls `ctx.shutdown()` (the same graceful path as `/quit`, so cleanup hooks
 fire). Exact match only — "Quit", "quit please", and RPC/scripted input all
 pass through to the LLM.
 
+`extensions/notification.ts` — rings the terminal bell when pi is waiting on
+you: the final reply of a run, or the `questionnaire` dialog. The normal case
+rings from `message_end` on an assistant message with `stopReason: "stop"`,
+deliberately not from `agent_end`/`agent_settled` alone — plan-mode's
+`agent_end` handler blocks on its post-plan menu, so a bell at settle time
+would only ring after the menu was already answered. An `agent_settled` handler
+covers the rest: a run ending without a normal reply (provider error,
+unrecovered truncation) still leaves pi waiting, and settling is the first
+point where retries and compaction are known to be done. Non-`stop` endings are
+skipped at `message_end` because a retried one would repeat the bell, and a
+recoverable truncation is dropped from history — ringing there would announce
+a reply you never see.
+Tool-use turns and Esc aborts stay silent; a `ctx.mode === "tui"` guard keeps
+subagent children (in-process sessions bound to mode `print`) and print/json/rpc
+runs quiet — in json mode a stray BEL would corrupt the output stream.
+`/notification` flips it, `/notification on|off` sets it directly; the flag is
+machine-local in `~/.pi/agent/notification.json`, defaults to on, and is
+deliberately not in `settings.base.json` (it's per-machine, and pi rewrites
+that file). Another running session picks the change up when it next starts.
+Relies on the default bell behavior of WezTerm and tmux, so it works over ssh
+to bento too.
+
 `extensions/ocean-terminal.ts` — swaps the terminal palette to base16-ocean for
 the duration of a pi session, porting the VimEnter/VimLeave OSC block from
 `vim/vimrc` (pi themes can't set the app background, so true immersion requires

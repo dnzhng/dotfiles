@@ -243,14 +243,17 @@ tether), and crash/stale-route recovery are documented in
 before the first share; anyone with the bearer link can prompt, and prompts
 may run tools on the originating machine.
 
+`extensions/enabled-models.ts` — keeps pi's scoped-model list in sync with the
+private overlay; see [Scoped models](#scoped-models).
+
 ## Settings
 
 `settings.base.json` — portable preferences, merged into
 `~/.pi/agent/settings.json` by install.sh (same pattern as `ai/claude`,
 simpler). Keys the base defines win; machine-local keys it doesn't define
-(`defaultProvider`, `defaultModel`, `enabledModels`, `lastChangelogVersion`,
-`tuiMode`) are preserved; `packages` is unioned so a package installed on one
-machine isn't dropped by the next install run.
+(`defaultProvider`, `defaultModel`, `lastChangelogVersion`, `tuiMode`) are
+preserved; `packages` is unioned so a package installed on one machine isn't
+dropped by the next install run.
 
 `packages` only lists packages this repo owns (currently `npm:pi-subagents`).
 Some pi packages (`pi-web-access`, `@ff-labs/pi-fff`) are managed externally —
@@ -272,6 +275,51 @@ machine, port it into `settings.base.json`, commit, and re-run install.sh
 elsewhere. Note a running pi session rewrites settings.json from in-memory
 state and can clobber a fresh merge — re-run install.sh with pi closed (or
 just /reload and re-check) if a key seems to vanish.
+
+## Scoped models
+
+`enabledModels` in `~/.pi/agent/settings.json` is pi's scoped-model list: the
+set Ctrl+P cycles and the "scoped" tab of `/model`. Every model from the
+providers in `~/.pi/agent/models.json` stays selectable in the "all" tab —
+scoping only narrows the fast-pick subset. `settings.base.json` deliberately
+doesn't define it.
+
+The source of truth is `private/ai/shared/pi/models.json`
+(`{"enabledModels": ["provider/model:level", ...]}`), applied by
+`private/ai/shared/pi/apply-models.sh` (default: restore settings.json from it,
+`--save`: fold a scope change back into it). The `enabled-models` extension runs
+both: at session start it restores the overlay, and at shutdown it saves the
+session's scope change as a **delta** — only models added or removed — so
+entries this machine can't resolve (provider auth missing, VPN off) and
+per-model thinking levels survive, and a save made on this machine doesn't
+drop other machines' picks. Removals do propagate, so removing a model here
+removes it everywhere after `/sync`.
+
+Entries must be exact `provider/model[:level]` refs — no globs or fuzzy ids,
+which `apply-models.sh` rejects. pi itself also accepts those forms, but a
+removed glob can't be identified on another machine.
+
+The save source is the live session scope, never `settings.json`: Gohan's
+`pi-config` update hook rewrites `enabledModels` as "every shared model" on
+each pi update, and an external write can't change a running session's scope,
+so its list isn't captured as your selection. A session whose scope contains
+models the overlay doesn't list was started on a pre-restore copy of the
+setting; it is barred from saving and shows a restart notice instead. (The
+narrow gap: a session that starts with no scope at all and then reloads can
+adopt whatever is on disk.) Session-only `/scoped-models` toggles are saved
+too — every session end (quit, `/new`, `/resume`, `/fork`, `/reload`) makes
+them permanent. Picking a default model outside the scope adds it to the scope
+and therefore to the overlay.
+
+pi's own `/scoped-models` persist writes bare `provider/model` ids without the
+thinking level; because saves are deltas, untouched entries keep their `:high`
+and the next restore puts the levels back into `settings.json`.
+
+Because `enabledModels` is read at startup, the first launch after a Gohan
+update still shows every model scoped; restart once and the overlay wins
+(`/new`, `/resume`, and `/fork` re-read it, so those pick up the restore
+immediately). `install.sh` and `/sync` restore it too, so a fresh machine is
+right on its first launch.
 
 ## Install
 

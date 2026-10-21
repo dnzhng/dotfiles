@@ -173,8 +173,9 @@ fi
 
 # Merge settings: layer the dotfiles base over the existing settings.json.
 # Never overwrite the whole file — pi rewrites it at runtime with
-# machine-local keys (defaultProvider, enabledModels, lastChangelogVersion),
-# which must survive. Keys defined in the base win; `packages` is unioned so
+# machine-local keys (defaultProvider, lastChangelogVersion), which must
+# survive. `enabledModels` survives here too; the scoped-models step below owns
+# it. Keys defined in the base win; `packages` is unioned so
 # packages installed on one machine aren't lost on the next install run.
 echo "Merging settings..."
 BASE_SETTINGS="$SCRIPT_DIR/settings.base.json"
@@ -200,19 +201,14 @@ else
     exit 1
 fi
 
-# Merge user-owned model providers from the private overlay into
-# ~/.pi/agent/models.json. Gohan's pi-config hook rewrites this file on every
-# Pi update but preserves provider keys it doesn't manage, so a user-owned
-# provider block (open-weights-long: GLM 5.2 Fast 1M context) is the right
-# additive shape. Re-applying on every install is idempotent and self-heals
-# if the block was removed. Skipped gracefully when the private repo isn't
-# present (same convention as the memory symlink above).
-echo "Merging model overlays..."
+# Gohan's pi-config hook rewrites enabledModels on every pi update, so
+# re-applying on every install self-heals it.
+echo "Syncing scoped models..."
 APPLY_MODELS="$(cd "$SCRIPT_DIR/../.." && pwd)/private/ai/shared/pi/apply-models.sh"
-if [ -x "$APPLY_MODELS" ]; then
-    "$APPLY_MODELS"
+if [ -f "$APPLY_MODELS" ]; then
+    bash "$APPLY_MODELS"
 else
-    echo "  Skipped model overlays (no private/ai/shared/pi/apply-models.sh)"
+    echo "  Skipped scoped models (no private/ai/shared/pi/apply-models.sh)"
 fi
 
 echo "Done! Select a theme in pi via /settings (edits hot-reload while it's active); run /reload to pick up extensions."

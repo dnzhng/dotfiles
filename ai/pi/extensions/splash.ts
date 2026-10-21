@@ -7,14 +7,16 @@
  * left, loaded resources (context / skills / prompts / extensions / themes)
  * on the right — equal-width columns separated by a thin vertical divider. The resource lists are
  * gathered from ~/.pi/agent + settings.json (pi's resourceLoader isn't
- * extension-visible); themes come from ctx.ui.getAllThemes(). Stacks to one
- * column on narrow terminals. Designed to pair with "Quiet startup" in settings, which hides
+ * extension-visible); themes come from ctx.ui.getAllThemes(). Info values are
+ * front-truncated so they can't widen the left column past the point where two
+ * columns fit; otherwise the splash stacks to one column on narrow terminals.
+ * Designed to pair with "Quiet startup" in settings, which hides
  * pi's own resources list so it isn't duplicated below the splash. Applied
  * on startup, new, and reload; skipped on resume/fork.
  */
 
 import { VERSION, type ExtensionAPI, type Theme } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { sliceByColumn, visibleWidth } from "@earendil-works/pi-tui";
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -35,9 +37,15 @@ const LOGO = [
 const DIVIDER_GAP = 2; // spaces on each side of the │ column divider
 const MIN_TWO_COLUMN_WIDTH = 64;
 const RIGHT_COLUMN_MAX = 52;
+const RIGHT_COLUMN_MIN = 20;
 // Vertical fill target: leave room for the editor/footer dock plus slack so
 // the end-following scroll view never clips the logo.
 const DOCK_RESERVE = 9;
+// Cap on an info value (label and its 2-space gap aside). A long model id,
+// path, or branch name would otherwise widen the left column far enough to
+// squeeze the right one, or push the whole splash into one column.
+const INFO_VALUE_MAX = 50;
+const TRUNCATE_MIN_FRAGMENT = 4;
 
 interface SplashInfo {
 	version: string;
@@ -45,6 +53,19 @@ interface SplashInfo {
 	cwd: string;
 	branch: string | null;
 	sections: [string, string[]][];
+}
+
+/**
+ * Keep the tail of a value — the end of a model id, path, or branch name is
+ * what identifies it. A leading token fragment shorter than
+ * TRUNCATE_MIN_FRAGMENT carries no information, so snap past its separator.
+ */
+function truncateFront(value: string, maxWidth: number): string {
+	const width = visibleWidth(value);
+	if (width <= maxWidth) return value;
+	const tail = sliceByColumn(value, width - (maxWidth - 1), maxWidth - 1);
+	const cut = tail.search(/[-/]/);
+	return `…${cut >= 0 && cut < TRUNCATE_MIN_FRAGMENT ? tail.slice(cut + 1) : tail}`;
 }
 
 const centerPad = (lineWidth: number, width: number): string =>
@@ -167,9 +188,10 @@ export class SplashHeader {
 			["cwd", info.cwd],
 		];
 		const labelW = Math.max(...pairs.map(([k]) => k.length));
+		const rows = pairs.map(([k, v]) => [k, truncateFront(v, INFO_VALUE_MAX)] as const);
 		return {
-			styled: pairs.map(([k, v]) => dim(k.padStart(labelW)) + "  " + muted(v)),
-			plain: pairs.map(([k, v]) => `${k.padStart(labelW)}  ${v}`),
+			styled: rows.map(([k, v]) => dim(k.padStart(labelW)) + "  " + muted(v)),
+			plain: rows.map(([k, v]) => `${k.padStart(labelW)}  ${v}`),
 		};
 	}
 
@@ -205,8 +227,8 @@ export class SplashHeader {
 		// to RIGHT_COLUMN_MAX so both sides match; its content stays centered.
 		const minLeftW = Math.max(logoW, infoW);
 		const leftW = Math.max(minLeftW, Math.min(RIGHT_COLUMN_MAX, Math.floor((width - dividerW) / 2)));
-		const rightW = Math.min(leftW, Math.max(20, width - leftW - dividerW));
-		const twoCol = width >= MIN_TWO_COLUMN_WIDTH && leftW + dividerW + 20 <= width;
+		const rightW = Math.min(leftW, Math.max(RIGHT_COLUMN_MIN, width - leftW - dividerW));
+		const twoCol = width >= MIN_TWO_COLUMN_WIDTH && leftW + dividerW + RIGHT_COLUMN_MIN <= width;
 
 		// Left column: logo and session-info block centered within the column.
 		// In two-column mode the eye measures padding to the divider, not the
@@ -236,7 +258,7 @@ export class SplashHeader {
 				content.push(left + leftCell + " ".repeat(DIVIDER_GAP) + dim("│") + " ".repeat(DIVIDER_GAP) + right);
 			}
 		} else {
-			const sections = this.sectionLines(Math.min(RIGHT_COLUMN_MAX, Math.max(20, width - 4)));
+			const sections = this.sectionLines(Math.min(RIGHT_COLUMN_MAX, Math.max(RIGHT_COLUMN_MIN, width - 4)));
 			const blockW = Math.max(leftW, RIGHT_COLUMN_MAX);
 			const left = centerPad(blockW, width);
 			for (const line of leftLines) content.push(left + line);

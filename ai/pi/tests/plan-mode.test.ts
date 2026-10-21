@@ -40,8 +40,11 @@ const PLAN_TEXT = [
 
 const EXECUTE_ACTION = "Execute the plan (track progress)";
 const CONFIGURE_ACTION = "Configure execution model & thinking";
+const CONFIGURE_REVIEW_ACTION = "Configure review model & thinking";
 const STAY_ACTION = "Stay in plan mode";
 const RESET_LABEL = "(reset to the pre-plan model)";
+const REVIEW_RESET_LABEL = "(reset to agent defaults)";
+const REVIEW_LINE = 'model "p/exec:high"';
 
 const planModel: FakeModel = { provider: "p", id: "planner", reasoning: true };
 const prePlanModel: FakeModel = { provider: "p", id: "pre-plan", reasoning: true };
@@ -52,7 +55,7 @@ interface Harness {
 	commands: Map<string, (args: string | undefined, ctx: unknown) => Promise<void>>;
 	handlers: Map<string, ((event: unknown, ctx: unknown) => Promise<unknown>)[]>;
 	entries: { type: string; customType?: string; data?: Record<string, unknown> }[];
-	sentMessages: { customType?: string }[];
+	sentMessages: { customType?: string; content?: string }[];
 	sentUserMessages: { content: unknown; options?: Record<string, unknown> }[];
 	events: string[];
 	setModelResult: boolean;
@@ -122,6 +125,7 @@ interface CtxOptions {
 	entries?: Harness["entries"];
 	selects?: (string | undefined)[];
 	editor?: string | undefined;
+	scopedModels?: { model: FakeModel }[];
 }
 
 function makeCtx(options: CtxOptions = {}) {
@@ -161,7 +165,7 @@ function makeCtx(options: CtxOptions = {}) {
 			getAvailable: () => options.availableModels ?? models,
 		},
 		model: options.currentModel ?? prePlanModel,
-		scopedModels: [],
+		scopedModels: options.scopedModels ?? [],
 		isIdle: () => true,
 		isProjectTrusted: () => true,
 		signal: undefined,
@@ -188,6 +192,12 @@ async function runSessionStart(h: Harness, ctx: Ctx, reason: string): Promise<vo
 	const handler = h.handlers.get("session_start")?.[0];
 	if (!handler) throw new Error("session_start handler not registered");
 	await handler({ type: "session_start", reason }, ctx);
+}
+
+async function runBeforeAgentStart(h: Harness): Promise<{ message?: { customType?: string; content?: string } } | undefined> {
+	const handler = h.handlers.get("before_agent_start")?.[0];
+	if (!handler) throw new Error("before_agent_start handler not registered");
+	return (await handler({}, undefined)) as { message?: { customType?: string; content?: string } } | undefined;
 }
 
 async function enterPlanMode(h: Harness, ctx: Ctx): Promise<void> {
@@ -435,6 +445,32 @@ describe("unusable targets", () => {
 		expect(h.sentMessages).toEqual([]);
 		expect(lastEntry(h).enabled).toBe(true);
 	});
+
+	test("does not execute when the review model is gone, even with a valid execution target", async () => {
+		const h = await loadExtension();
+		const entries = [
+			{
+				type: "custom",
+				customType: "plan-mode",
+				data: {
+					enabled: true,
+					todos: [],
+					executing: false,
+					executionConfig: { provider: "p", id: "exec", thinkingLevel: "high" },
+					reviewConfig: { provider: "p", id: "deleted", thinkingLevel: "high" },
+				},
+			},
+		];
+		const ctx = makeCtx({ entries, selects: [EXECUTE_ACTION] });
+		await runSessionStart(h, ctx, "resume");
+
+		await runAgentEnd(h, ctx);
+
+		expect(h.events).toEqual([]);
+		expect(h.sentMessages).toEqual([]);
+		expect(lastEntry(h).enabled).toBe(true);
+		expect(ctx.notifications.some((n) => n.message.includes("Review model not found"))).toBe(true);
+	});
 });
 
 describe("fresh-session execution", () => {
@@ -558,5 +594,186 @@ describe("fresh-session execution", () => {
 		await runSessionStart(h, ctx, "resume");
 
 		expect(h.events).toEqual([]);
+	});
+
+	test("seeds the review target and includes it in both kickoffs", async () => {
+		const h = await loadExtension();
+		const ctx = makeCtx({ selects: [CONFIGURE_REVIEW_ACTION, "p/exec", "high", STAY_ACTION] });
+		await enterPlanMode(h, ctx);
+		await runAgentEnd(h, ctx);
+
+		const seeded: Harness["entries"] = [];
+		const kickoff: string[] = [];
+		await runFreshExecute(h, makeFreshCtx(ctx, seeded, kickoff));
+
+		expect(kickoff).toHaveLength(1);
+		expect(kickoff[0]).toContain(REVIEW_LINE);
+		expect(seeded.at(-1)?.data?.reviewConfig).toEqual({ provider: "p", id: "exec", thinkingLevel: "high" });
+
+		const fresh = await loadExtension();
+		const freshCtx = makeCtx({ entries: seeded });
+		await runSessionStart(fresh, freshCtx, "new");
+
+		expect(fresh.events).toEqual([]);
+		const context = await runBeforeAgentStart(fresh);
+		expect(context?.message?.customType).toBe("plan-execution-context");
+		expect(context?.message?.content).toContain(REVIEW_LINE);
+	});
+
+	test("aborts before replacing the session when the review target is unusable", async () => {
+		const h = await loadExtension();
+		const entries = [
+			{
+				type: "custom",
+				customType: "plan-mode",
+				data: {
+					enabled: true,
+					todos: [{ step: 1, text: "Do the first thing", completed: false }],
+					executing: false,
+					lastPlanFile: join(plansRoot, "memory", "agent", ".plans", "plan.md"),
+					reviewConfig: { provider: "p", id: "deleted", thinkingLevel: "high" },
+				},
+			},
+		];
+		const ctx = makeCtx({ entries });
+		await runSessionStart(h, ctx, "resume");
+
+		const seeded: Harness["entries"] = [];
+		const kickoff: string[] = [];
+		await runFreshExecute(h, makeFreshCtx(ctx, seeded, kickoff));
+
+		expect(seeded).toEqual([]);
+		expect(kickoff).toEqual([]);
+		expect(ctx.notifications.some((n) => n.message.includes("Review model not found"))).toBe(true);
+	});
+});
+
+describe("review target", () => {
+	test("configures and persists without switching models", async () => {
+		const h = await loadExtension();
+		const ctx = makeCtx({ selects: [CONFIGURE_REVIEW_ACTION, "p/exec", "high", STAY_ACTION] });
+		await enterPlanMode(h, ctx);
+
+		await runAgentEnd(h, ctx);
+
+		expect(h.events).toEqual([]);
+		expect(lastEntry(h).reviewConfig).toEqual({ provider: "p", id: "exec", thinkingLevel: "high" });
+		expect(lastEntry(h).executionConfig).toBeUndefined();
+		expect(ctx.selectCalls.at(-1)?.title).toContain("review with p/exec @ high");
+	});
+
+	test("reset clears the review target", async () => {
+		const h = await loadExtension();
+		const ctx = makeCtx({
+			selects: [CONFIGURE_REVIEW_ACTION, "p/exec", "high", CONFIGURE_REVIEW_ACTION, REVIEW_RESET_LABEL, STAY_ACTION],
+		});
+		await enterPlanMode(h, ctx);
+
+		await runAgentEnd(h, ctx);
+
+		expect(lastEntry(h).reviewConfig).toBeUndefined();
+		expect(ctx.selectCalls.at(-1)?.title).toContain("review with agent defaults");
+	});
+
+	test("cancelling the thinking dialog keeps the previous review target", async () => {
+		const h = await loadExtension();
+		const ctx = makeCtx({
+			selects: [CONFIGURE_REVIEW_ACTION, "p/exec", "high", CONFIGURE_REVIEW_ACTION, "p/plain", undefined, STAY_ACTION],
+		});
+		await enterPlanMode(h, ctx);
+
+		await runAgentEnd(h, ctx);
+
+		expect(lastEntry(h).reviewConfig).toEqual({ provider: "p", id: "exec", thinkingLevel: "high" });
+	});
+
+	test("cancelling the model dialog keeps the previous review target", async () => {
+		const h = await loadExtension();
+		const ctx = makeCtx({ selects: [CONFIGURE_REVIEW_ACTION, "p/exec", "high", CONFIGURE_REVIEW_ACTION, undefined, STAY_ACTION] });
+		await enterPlanMode(h, ctx);
+
+		await runAgentEnd(h, ctx);
+
+		expect(lastEntry(h).reviewConfig).toEqual({ provider: "p", id: "exec", thinkingLevel: "high" });
+	});
+
+	test("clears the review target when plan mode is toggled off", async () => {
+		const h = await loadExtension();
+		const ctx = makeCtx({ selects: [CONFIGURE_REVIEW_ACTION, "p/exec", "high", STAY_ACTION] });
+		await enterPlanMode(h, ctx);
+		await runAgentEnd(h, ctx);
+		expect(lastEntry(h).reviewConfig).toEqual({ provider: "p", id: "exec", thinkingLevel: "high" });
+
+		await enterPlanMode(h, ctx);
+
+		expect(lastEntry(h).reviewConfig).toBeUndefined();
+	});
+
+	test("includes the review line in the execute kickoff and the running context", async () => {
+		const h = await loadExtension();
+		const ctx = makeCtx({ selects: [CONFIGURE_REVIEW_ACTION, "p/exec", "high", EXECUTE_ACTION] });
+		await enterPlanMode(h, ctx);
+		ctx.model = planModel;
+
+		await runAgentEnd(h, ctx);
+
+		expect(h.sentMessages.at(-1)?.content).toContain(REVIEW_LINE);
+		const context = await runBeforeAgentStart(h);
+		expect(context?.message?.customType).toBe("plan-execution-context");
+		expect(context?.message?.content).toContain(REVIEW_LINE);
+	});
+
+	test("omits the review line when no review target is configured", async () => {
+		const h = await loadExtension();
+		const ctx = makeCtx({ selects: [EXECUTE_ACTION] });
+		await enterPlanMode(h, ctx);
+		ctx.model = planModel;
+
+		await runAgentEnd(h, ctx);
+
+		expect(h.sentMessages.at(-1)?.content).not.toContain("Review model:");
+		const context = await runBeforeAgentStart(h);
+		expect(context?.message?.content).not.toContain("Review model:");
+	});
+});
+
+describe("model picker ordering", () => {
+	test("lists scoped models first, deduped, skipping unavailable ones", async () => {
+		const h = await loadExtension();
+		const ctx = makeCtx({
+			selects: [CONFIGURE_ACTION, undefined, STAY_ACTION],
+			// execModel is scoped but not available (no credentials): it must not be offered.
+			availableModels: [planModel, prePlanModel, noThinkingModel],
+			scopedModels: [
+				{ model: noThinkingModel },
+				{ model: execModel },
+				{ model: noThinkingModel },
+				{ model: { provider: "q", id: "ghost" } },
+			],
+		});
+		await enterPlanMode(h, ctx);
+
+		await runAgentEnd(h, ctx);
+
+		expect(ctx.selectCalls[1]?.options).toEqual([RESET_LABEL, "p/plain", "p/planner", "p/pre-plan"]);
+	});
+
+	test("uses the same ordering for the review picker", async () => {
+		const h = await loadExtension();
+		const ctx = makeCtx({
+			selects: [CONFIGURE_REVIEW_ACTION, undefined, STAY_ACTION],
+			scopedModels: [{ model: execModel }],
+		});
+		await enterPlanMode(h, ctx);
+
+		await runAgentEnd(h, ctx);
+
+		expect(ctx.selectCalls[1]?.options).toEqual([
+			REVIEW_RESET_LABEL,
+			"p/exec",
+			"p/planner",
+			"p/pre-plan",
+			"p/plain",
+		]);
 	});
 });

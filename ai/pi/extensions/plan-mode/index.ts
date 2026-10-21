@@ -9,9 +9,10 @@
  * - Model routing: entering plan mode switches the session to a stronger planning
  *   model (claude-opus-5-5) and leaving/executing restores the previous model —
  *   session-scoped via pi.setModel, so the configured default is untouched
- * - Per-plan execution target: the post-plan menu can pin the model and thinking level
- *   used to execute this plan, independent of the planning model; cleared when plan
- *   mode is toggled or a new plan starts
+ * - Per-plan execution and review targets: the post-plan menu can pin the model and
+ *   thinking level used to execute this plan and the one review subagents run on,
+ *   independent of the planning model; cleared when plan mode is toggled or a new
+ *   plan starts. Model pickers list scoped models (enabledModels / --models) first.
  * - Bash restricted to allowlisted read-only commands
  * - Extracts numbered plan steps from "Plan:" sections
  * - [DONE:n] markers to complete steps during execution
@@ -69,7 +70,7 @@ import {
 	type ModelThinkingLevel,
 	type TextContent,
 } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ScopedModel } from "@earendil-works/pi-coding-agent";
 import { Key } from "@earendil-works/pi-tui";
 import { getBus, publishBus } from "../side-panel/bus.ts";
 import { registerQuestionnaireTool } from "./questionnaire.ts";
@@ -107,10 +108,36 @@ interface PlanModeState {
 	lastPlanFile?: string;
 	modelBeforePlanMode?: { provider: string; id: string };
 	executionConfig?: ExecutionConfig;
+	reviewConfig?: ExecutionConfig;
 }
 
 // Model used while plan mode is active (session-scoped switch; restored on exit).
 const PLAN_MODEL = { provider: "instacart-anthropic", id: "claude-opus-5-5@default" } as const;
+
+const modelKey = (model: Model<Api>): string => `${model.provider}/${model.id}`;
+
+function orderModelsScopedFirst(
+	available: readonly Model<Api>[],
+	scoped: readonly ScopedModel[],
+): Model<Api>[] {
+	const byKey = new Map(available.map((model) => [modelKey(model), model]));
+	const ordered: Model<Api>[] = [];
+	const seen = new Set<string>();
+	for (const { model } of scoped) {
+		const key = modelKey(model);
+		const match = byKey.get(key);
+		if (!match || seen.has(key)) continue;
+		seen.add(key);
+		ordered.push(match);
+	}
+	for (const model of available) {
+		const key = modelKey(model);
+		if (seen.has(key)) continue;
+		seen.add(key);
+		ordered.push(model);
+	}
+	return ordered;
+}
 
 // Type guard for assistant messages
 function isAssistantMessage(m: AgentMessage): m is AssistantMessage {
@@ -299,11 +326,15 @@ async function cleanupExpiredPlans(ctx: ExtensionContext): Promise<void> {
 }
 
 const CONFIGURE_EXECUTION_ACTION = "Configure execution model & thinking";
+const CONFIGURE_REVIEW_ACTION = "Configure review model & thinking";
+const EXECUTION_RESET_LABEL = "(reset to the pre-plan model)";
+const REVIEW_RESET_LABEL = "(reset to agent defaults)";
 
 const PLAN_ACTIONS = [
 	"Execute the plan (track progress)",
 	"Execute in a fresh session (clear context)",
 	CONFIGURE_EXECUTION_ACTION,
+	CONFIGURE_REVIEW_ACTION,
 	"Stay in plan mode",
 	"Refine the plan",
 ] as const;
@@ -314,8 +345,12 @@ const PLAN_ACTIONS = [
  * (Esc / narrow-resize resolve undefined = stay, matching the select-cancel path).
  * Otherwise fall back to the stock editor-replacing select.
  */
-function selectPlanAction(ctx: ExtensionContext, executionLabel: string): Promise<string | undefined> {
-	const title = `Plan mode - what next? [execute with ${executionLabel}]`;
+function selectPlanAction(
+	ctx: ExtensionContext,
+	executionLabel: string,
+	reviewLabel: string,
+): Promise<string | undefined> {
+	const title = `Plan mode - what next? [execute with ${executionLabel} | review with ${reviewLabel}]`;
 	if (!getBus().capable) {
 		return ctx.ui.select(title, [...PLAN_ACTIONS]);
 	}
@@ -421,6 +456,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	let lastPlanFile: string | undefined;
 	let modelBeforePlanMode: { provider: string; id: string } | undefined;
 	let executionConfig: ExecutionConfig | undefined;
+	let reviewConfig: ExecutionConfig | undefined;
 
 	registerQuestionnaireTool(pi);
 
@@ -505,6 +541,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			lastPlanFile,
 			modelBeforePlanMode,
 			executionConfig,
+			reviewConfig,
 		});
 	}
 
@@ -543,23 +580,32 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			: "pre-plan model";
 	}
 
-	function resolveExecutionModel(ctx: ExtensionContext): Model<Api> | undefined {
-		if (!executionConfig) return undefined;
-		const target = ctx.modelRegistry.find(executionConfig.provider, executionConfig.id);
+	function reviewLabel(): string {
+		return reviewConfig
+			? `${reviewConfig.provider}/${reviewConfig.id} @ ${reviewConfig.thinkingLevel}`
+			: "agent defaults";
+	}
+
+	function resolveConfiguredModel(
+		ctx: ExtensionContext,
+		config: ExecutionConfig,
+		kind: "Execution" | "Review",
+	): Model<Api> | undefined {
+		const target = ctx.modelRegistry.find(config.provider, config.id);
 		if (!target) {
-			ctx.ui.notify(`Execution model not found: ${executionConfig.provider}/${executionConfig.id}`, "warning");
+			ctx.ui.notify(`${kind} model not found: ${config.provider}/${config.id}`, "warning");
 			return undefined;
 		}
-		if (!getSupportedThinkingLevels(target).includes(executionConfig.thinkingLevel)) {
+		if (!getSupportedThinkingLevels(target).includes(config.thinkingLevel)) {
 			ctx.ui.notify(
-				`${target.id} no longer supports thinking level ${executionConfig.thinkingLevel} — reconfigure or reset the execution model.`,
+				`${target.id} no longer supports thinking level ${config.thinkingLevel} — reconfigure or reset the ${kind.toLowerCase()} model.`,
 				"warning",
 			);
 			return undefined;
 		}
 		if (!ctx.modelRegistry.getAvailable().some((m) => m.provider === target.provider && m.id === target.id)) {
 			ctx.ui.notify(
-				`Execution model ${target.id} is unavailable (authentication not configured) — reconfigure or reset the execution model.`,
+				`${kind} model ${target.id} is unavailable (authentication not configured) — reconfigure or reset the ${kind.toLowerCase()} model.`,
 				"warning",
 			);
 			return undefined;
@@ -572,7 +618,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			await restoreModelBeforePlan(ctx);
 			return true;
 		}
-		const target = resolveExecutionModel(ctx);
+		const target = resolveConfiguredModel(ctx, executionConfig, "Execution");
 		if (!target) return false;
 		if (!(await pi.setModel(target))) {
 			ctx.ui.notify(`Could not switch to execution model ${target.id} (auth not configured)`, "warning");
@@ -583,30 +629,47 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		return true;
 	}
 
-	async function configureExecution(ctx: ExtensionContext): Promise<void> {
-		const models = ctx.modelRegistry.getAvailable();
+	async function pickModelConfig(
+		ctx: ExtensionContext,
+		title: string,
+		resetLabel: string,
+	): Promise<ExecutionConfig | "reset" | undefined> {
+		const models = orderModelsScopedFirst(ctx.modelRegistry.getAvailable(), ctx.scopedModels);
 		if (models.length === 0) {
-			ctx.ui.notify("No models available — cannot configure execution.", "warning");
-			return;
+			ctx.ui.notify("No models available — cannot configure a model.", "warning");
+			return undefined;
 		}
-		const resetLabel = "(reset to the pre-plan model)";
-		const labels = models.map((m) => `${m.provider}/${m.id}`);
-		const current = executionConfig ? ` — current: ${executionLabel()}` : "";
-		const choice = await ctx.ui.select(`Execution model${current}`, [resetLabel, ...labels]);
-		if (choice === undefined) return;
-		if (choice === resetLabel) {
-			executionConfig = undefined;
-			ctx.ui.notify("Execution will use the pre-plan model.", "info");
-			return;
-		}
-		const model = models.find((m) => `${m.provider}/${m.id}` === choice);
-		if (!model) return;
-		const level = await ctx.ui.select(`Thinking level for ${model.provider}/${model.id}`, [
+		const choice = await ctx.ui.select(title, [resetLabel, ...models.map(modelKey)]);
+		if (choice === undefined) return undefined;
+		if (choice === resetLabel) return "reset";
+		const model = models.find((m) => modelKey(m) === choice);
+		if (!model) return undefined;
+		const level = await ctx.ui.select(`Thinking level for ${modelKey(model)}`, [
 			...getSupportedThinkingLevels(model),
 		]);
-		if (level === undefined) return;
-		executionConfig = { provider: model.provider, id: model.id, thinkingLevel: level as ModelThinkingLevel };
-		ctx.ui.notify(`Execution: ${executionLabel()}`, "info");
+		if (level === undefined) return undefined;
+		return { provider: model.provider, id: model.id, thinkingLevel: level as ModelThinkingLevel };
+	}
+
+	async function configureExecution(ctx: ExtensionContext): Promise<void> {
+		const current = executionConfig ? ` — current: ${executionLabel()}` : "";
+		const picked = await pickModelConfig(ctx, `Execution model${current}`, EXECUTION_RESET_LABEL);
+		if (picked === undefined) return;
+		executionConfig = picked === "reset" ? undefined : picked;
+		ctx.ui.notify(picked === "reset" ? "Execution will use the pre-plan model." : `Execution: ${executionLabel()}`, "info");
+	}
+
+	async function configureReview(ctx: ExtensionContext): Promise<void> {
+		const current = reviewConfig ? ` — current: ${reviewLabel()}` : "";
+		const picked = await pickModelConfig(ctx, `Review model${current}`, REVIEW_RESET_LABEL);
+		if (picked === undefined) return;
+		reviewConfig = picked === "reset" ? undefined : picked;
+		ctx.ui.notify(picked === "reset" ? "Review will use the agent defaults." : `Review: ${reviewLabel()}`, "info");
+	}
+
+	function reviewModelInstruction(): string {
+		if (!reviewConfig) return "";
+		return `Review model: launch every review-team subagent and the final staff-level review with model "${reviewConfig.provider}/${reviewConfig.id}:${reviewConfig.thinkingLevel}" (subagent model param); implementation agents and comment-sweeper keep their defaults.`;
 	}
 
 	async function togglePlanMode(ctx: ExtensionContext): Promise<void> {
@@ -615,6 +678,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		todoItems = [];
 		lastPlanFile = undefined;
 		executionConfig = undefined;
+		reviewConfig = undefined;
 
 		if (planModeEnabled) {
 			enablePlanModeTools();
@@ -655,12 +719,15 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			}
 			// Validate before replacing the session: the fresh instance applies the target from
 			// the seeded entry, and an unusable target must not launch execution.
-			if (executionConfig && !resolveExecutionModel(ctx)) return;
+			if (executionConfig && !resolveConfiguredModel(ctx, executionConfig, "Execution")) return;
+			if (reviewConfig && !resolveConfiguredModel(ctx, reviewConfig, "Review")) return;
 
 			// Plain data only — captured session-bound objects are stale after replacement.
 			const todos = todoItems.map((t) => ({ ...t }));
 			const planFile = lastPlanFile;
 			const config = executionConfig ? { ...executionConfig } : undefined;
+			const reviewConfigForSession = reviewConfig ? { ...reviewConfig } : undefined;
+			const reviewLine = reviewModelInstruction();
 			const parentSession = ctx.sessionManager.getSessionFile();
 			const kickoff = [
 				`Execute the plan saved at: ${planFile}`,
@@ -669,6 +736,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				"After completing a step, run its verify check, then include a [DONE:n] tag in your response.",
 				"Delegation: follow the plan's Multi-Agent Team Structure section if it has one — parallel implementation agents in separate worktrees for independent chunks, a parallel quality pass after implementation, then simplify + final review. Small plans: implement inline, then the quality pass.",
 				"Comment audit (always): as part of the review pass, dispatch the comment-sweeper subagent with the changed-file list so it strips over-added comments per the AGENTS.md zero-comment policy (it may edit files; give it a verify command such as the repo's type-check or lint).",
+				...(reviewLine ? [reviewLine] : []),
 				"Do not commit anything unless the user explicitly asks.",
 			].join("\n");
 
@@ -683,6 +751,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 						executing: true,
 						lastPlanFile: planFile,
 						executionConfig: config,
+						reviewConfig: reviewConfigForSession,
 					});
 				},
 				withSession: async (freshCtx) => {
@@ -777,6 +846,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			const remaining = todoItems.filter((t) => !t.completed);
 			const todoList = remaining.map((t) => `${t.step}. ${t.text}`).join("\n");
 			const planFileLine = lastPlanFile ? `\nFull plan file: ${lastPlanFile}` : "";
+			const reviewLine = reviewModelInstruction();
 			return {
 				message: {
 					customType: "plan-execution-context",
@@ -793,7 +863,7 @@ silent-failure hunt, test coverage, lint/format), then simplify + a final staff-
 Comment audit (always): as part of the review pass, dispatch the comment-sweeper subagent on the
 changed files so it strips over-added comments per the AGENTS.md zero-comment policy.
 Small plans without that section: implement inline, then the quality pass.
-Do not commit anything unless the user explicitly asks.${planFileLine}`,
+${reviewLine ? `${reviewLine}\n` : ""}Do not commit anything unless the user explicitly asks.${planFileLine}`,
 					display: false,
 				},
 			};
@@ -861,13 +931,14 @@ Do not commit anything unless the user explicitly asks.${planFileLine}`,
 		if (todoItems.length === 0) return;
 		persistState();
 
-		let choice = await selectPlanAction(ctx, executionLabel());
-		// Configuring the execution target is a menu round-trip: persist and re-open so the
-		// user can see the new target and pick an action in the same flow.
-		while (choice === CONFIGURE_EXECUTION_ACTION) {
-			await configureExecution(ctx);
+		let choice = await selectPlanAction(ctx, executionLabel(), reviewLabel());
+		// Configuring a target is a menu round-trip: persist and re-open so the user can see
+		// the new target and pick an action in the same flow.
+		while (choice === CONFIGURE_EXECUTION_ACTION || choice === CONFIGURE_REVIEW_ACTION) {
+			if (choice === CONFIGURE_EXECUTION_ACTION) await configureExecution(ctx);
+			else await configureReview(ctx);
 			persistState();
-			choice = await selectPlanAction(ctx, executionLabel());
+			choice = await selectPlanAction(ctx, executionLabel(), reviewLabel());
 		}
 
 		if (choice?.startsWith("Execute in a fresh")) {
@@ -886,8 +957,9 @@ Do not commit anything unless the user explicitly asks.${planFileLine}`,
 		if (choice?.startsWith("Execute")) {
 			const firstTodoItem = todoItems[0];
 			if (!firstTodoItem) return;
-			// Apply the target first: an unusable one leaves the user in plan mode (menu
+			// Apply the targets first: an unusable one leaves the user in plan mode (menu
 			// still available) instead of executing on an unintended model.
+			if (reviewConfig && !resolveConfiguredModel(ctx, reviewConfig, "Review")) return;
 			if (!(await applyExecutionConfig(ctx))) return;
 
 			planModeEnabled = false;
@@ -898,6 +970,7 @@ Do not commit anything unless the user explicitly asks.${planFileLine}`,
 
 			const remainingList = todoItems.map((t) => `${t.step}. ${t.text}`).join("\n");
 			const planFileLine = lastPlanFile ? `\nFull plan file: ${lastPlanFile}` : "";
+			const reviewLine = reviewModelInstruction();
 			const execMessage = `Execute the plan.
 
 Remaining steps:
@@ -909,7 +982,7 @@ Delegation: follow the plan's Multi-Agent Team Structure section (full plan file
 implementation agents in separate worktrees for independent chunks, a parallel quality pass after
 implementation, then simplify + final review. Small plans: implement inline, then the quality pass.
 Comment audit (always): as part of the review pass, dispatch the comment-sweeper subagent with the
-changed-file list so it strips over-added comments per the AGENTS.md zero-comment policy.${planFileLine}`;
+changed-file list so it strips over-added comments per the AGENTS.md zero-comment policy.${reviewLine ? `\n${reviewLine}` : ""}${planFileLine}`;
 			pi.sendMessage(
 				{ customType: "plan-mode-execute", content: execMessage, display: true },
 				{ triggerTurn: true, deliverAs: "followUp" },
@@ -958,6 +1031,7 @@ changed-file list so it strips over-added comments per the AGENTS.md zero-commen
 			lastPlanFile = planModeEntry.data.lastPlanFile ?? lastPlanFile;
 			modelBeforePlanMode = planModeEntry.data.modelBeforePlanMode ?? modelBeforePlanMode;
 			executionConfig = planModeEntry.data.executionConfig ?? executionConfig;
+			reviewConfig = planModeEntry.data.reviewConfig ?? reviewConfig;
 		}
 
 		// On resume: re-scan messages to rebuild completion state

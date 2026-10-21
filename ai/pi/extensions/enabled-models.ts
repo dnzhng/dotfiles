@@ -8,11 +8,12 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ScopedModel } from "@earendil-works/pi-coding-agent";
 import { dotfilesDir } from "./dotfiles.ts";
 
 const SCRIPT_REL = join("private", "ai", "shared", "pi", "apply-models.sh");
 const LEVEL_SUFFIX = /:(off|minimal|low|medium|high|xhigh|max)$/;
+const RESTART_NOTICE = "Scoped models restored from the dotfiles list — restart pi to apply";
 
 function applyScript(): string | undefined {
 	const root = dotfilesDir();
@@ -60,6 +61,29 @@ function runsOutsideOverlay(startRefs: string[], overlay: string[]): boolean {
 	return startRefs.some((ref) => !known.has(modelKey([ref])));
 }
 
+function resolveScope(
+	refs: string[],
+	available: readonly ScopedModel["model"][],
+	current: readonly ScopedModel[],
+): ScopedModel[] {
+	const byRef = new Map<string, ScopedModel["model"]>();
+	for (const scoped of current) byRef.set(`${scoped.model.provider}/${scoped.model.id}`.toLowerCase(), scoped.model);
+	for (const model of available) byRef.set(`${model.provider}/${model.id}`.toLowerCase(), model);
+	const resolved: ScopedModel[] = [];
+	for (const ref of refs) {
+		const model = byRef.get(ref.replace(LEVEL_SUFFIX, "").toLowerCase());
+		if (!model) continue;
+		const thinkingLevel = LEVEL_SUFFIX.exec(ref)?.[1] as ScopedModel["thinkingLevel"];
+		resolved.push(thinkingLevel ? { model, thinkingLevel } : { model });
+	}
+	return resolved;
+}
+
+function adoptScope(ctx: ExtensionContext, target: ScopedModel[]): boolean {
+	(ctx.scopedModels as ScopedModel[]).splice(0, ctx.scopedModels.length, ...target);
+	return modelKey(scopeRefs(ctx.scopedModels)) === modelKey(scopeRefs(target));
+}
+
 export default function (pi: ExtensionAPI) {
 	let startRefs: string[] = [];
 	let stale = false;
@@ -69,14 +93,27 @@ export default function (pi: ExtensionAPI) {
 		stale = false;
 		const script = applyScript();
 		if (!script) return;
-		stale = runsOutsideOverlay(startRefs, overlayRefs(script));
+		const overlay = overlayRefs(script);
 		const { error } = run(script, []);
 		if (error) {
 			ctx.ui.notify(`Scoped models: apply-models.sh failed — ${error}`, "warning");
 			stale = true;
 			return;
 		}
-		if (stale) ctx.ui.notify("Scoped models restored from the dotfiles list — restart pi to apply", "info");
+		const target = resolveScope(overlay, ctx.modelRegistry.getAvailable(), ctx.scopedModels);
+		if (process.argv.includes("--models") || (overlay.length > 0 && target.length === 0)) {
+			stale = runsOutsideOverlay(startRefs, overlay);
+			if (stale) ctx.ui.notify(RESTART_NOTICE, "info");
+			return;
+		}
+		if (modelKey(startRefs) === modelKey(scopeRefs(target))) return;
+		if (!adoptScope(ctx, target)) {
+			stale = true;
+			ctx.ui.notify(RESTART_NOTICE, "info");
+			return;
+		}
+		startRefs = scopeRefs(ctx.scopedModels);
+		ctx.ui.notify("Scoped models restored from the dotfiles list", "info");
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {

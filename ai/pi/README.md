@@ -302,24 +302,27 @@ removed glob can't be identified on another machine.
 The save source is the live session scope, never `settings.json`: Gohan's
 `pi-config` update hook rewrites `enabledModels` as "every shared model" on
 each pi update, and an external write can't change a running session's scope,
-so its list isn't captured as your selection. A session whose scope contains
-models the overlay doesn't list was started on a pre-restore copy of the
-setting; it is barred from saving and shows a restart notice instead. (The
-narrow gap: a session that starts with no scope at all and then reloads can
-adopt whatever is on disk.) Session-only `/scoped-models` toggles are saved
-too — every session end (quit, `/new`, `/resume`, `/fork`, `/reload`) makes
-them permanent. Picking a default model outside the scope adds it to the scope
-and therefore to the overlay.
+so its list isn't captured as your selection. Instead the extension rewrites
+the running scope in place, matching the overlay against the model catalogue,
+so the restore applies without a restart. Session-only `/scoped-models`
+toggles are saved too — every session end (quit, `/new`, `/resume`, `/fork`,
+`/reload`) makes them permanent. Picking a default model outside the scope
+adds it to the scope and therefore to the overlay.
+
+A restart notice appears only when the swap can't happen: `pi --models` (the
+CLI scope wins), an overlay whose entries all fail to resolve here, or a pi
+build that hands extensions a copy of the scope instead of the live array. In
+those cases the session is barred from saving, so a pre-restore scope never
+overwrites the overlay.
 
 pi's own `/scoped-models` persist writes bare `provider/model` ids without the
 thinking level; because saves are deltas, untouched entries keep their `:high`
 and the next restore puts the levels back into `settings.json`.
 
-Because `enabledModels` is read at startup, the first launch after a Gohan
-update still shows every model scoped; restart once and the overlay wins
-(`/new`, `/resume`, and `/fork` re-read it, so those pick up the restore
-immediately). `install.sh` and `/sync` restore it too, so a fresh machine is
-right on its first launch.
+`enabledModels` is read at startup, so the extension applies the overlay to the
+live session there; editing the overlay mid-session takes effect on `/reload`
+(and on `/new`, `/resume`, `/fork`, which re-read it). `install.sh` and `/sync`
+restore it too, so a fresh machine is right on its first launch.
 
 ## Install
 

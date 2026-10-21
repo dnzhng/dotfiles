@@ -26,6 +26,21 @@ function scoped(...refs: string[]): Scope[] {
 	});
 }
 
+function refs(scope: readonly Scope[]): string[] {
+	return scope.map(({ provider, id, thinkingLevel }) =>
+		thinkingLevel ? `${provider}/${id}:${thinkingLevel}` : `${provider}/${id}`,
+	);
+}
+
+function live(context: { scopedModels: readonly { model: Scope; thinkingLevel?: string }[] }): string[] {
+	return refs(
+		context.scopedModels.map(({ model, thinkingLevel }) => ({
+			...model,
+			thinkingLevel: thinkingLevel ?? model.thinkingLevel,
+		})),
+	);
+}
+
 function fixture(saved: string[], settings: Record<string, unknown> | null = { enabledModels: saved }) {
 	const root = mkdtempSync(join(tmpdir(), "enabled-models-test-"));
 	roots.push(root);
@@ -43,6 +58,8 @@ function fixture(saved: string[], settings: Record<string, unknown> | null = { e
 	return {
 		overlay: () => JSON.parse(readFileSync(join(piDir, "models.json"), "utf8")).enabledModels as string[],
 		rawOverlay: () => readFileSync(join(piDir, "models.json"), "utf8"),
+		writeOverlay: (saved: string[]) =>
+			writeFileSync(join(piDir, "models.json"), JSON.stringify({ enabledModels: saved }, null, 2)),
 		settings: () => JSON.parse(readFileSync(join(home, ".pi", "agent", "settings.json"), "utf8")) as Record<string, unknown>,
 		rawSettings: () => readFileSync(join(home, ".pi", "agent", "settings.json"), "utf8"),
 	};
@@ -57,15 +74,25 @@ async function handlers() {
 			fires[name] = fn;
 		},
 	} as never);
-	const ctx = (scope: Scope[]) => ({
-		scopedModels: scope.map((model) => ({ model, thinkingLevel: model.thinkingLevel })),
-		ui: { notify: (message: string) => notices.push(message) },
-	});
+	const ctx = (scope: Scope[], options: { available?: Scope[]; snapshot?: boolean } = {}) => {
+		const entries = scope.map((model) => ({ model, thinkingLevel: model.thinkingLevel }));
+		const available = (options.available ?? AVAILABLE).map(({ provider, id }) => ({ provider, id }));
+		return {
+			get scopedModels() {
+				return options.snapshot ? entries.map((entry) => ({ ...entry })) : entries;
+			},
+			modelRegistry: { getAvailable: () => available },
+			ui: { notify: (message: string) => notices.push(message) },
+		};
+	};
 	return { fires, notices, ctx };
 }
 
 const SAVED = ["open-weights/deepseek-v4p1-flash-priority:high", "vertex-proxy/gemini-3.8-flash:high"];
 const WIDE = ["a/one:high", "b/two", "c/three:high"];
+const KIMI = "open-weights/kimi-k3-priority";
+const FIREWORKS = "open-weights/accounts/fireworks/models/deepseek-v4p1-flash-1017";
+const AVAILABLE = scoped(...SAVED, ...WIDE, KIMI, FIREWORKS);
 
 afterAll(() => {
 	process.env.HOME = env.HOME;
@@ -74,12 +101,14 @@ afterAll(() => {
 });
 
 describe("enabled-models", () => {
-	test("restores the saved scope and warns that a restart is needed", async () => {
+	test("restores the saved scope into the running session", async () => {
 		const f = fixture(SAVED, { enabledModels: WIDE });
 		const { fires, notices, ctx } = await handlers();
-		fires.session_start!({ reason: "startup" }, ctx(scoped(...WIDE)));
+		const c = ctx(scoped(...WIDE));
+		fires.session_start!({ reason: "startup" }, c);
 		expect(f.settings().enabledModels).toEqual(SAVED);
-		expect(notices[0]).toContain("restart pi");
+		expect(live(c)).toEqual(SAVED);
+		expect(notices).toEqual(["Scoped models restored from the dotfiles list"]);
 	});
 
 	test("does not write when the scope already matches", async () => {
@@ -104,8 +133,9 @@ describe("enabled-models", () => {
 		const f = fixture(SAVED);
 		const before = f.rawOverlay();
 		const { fires, ctx } = await handlers();
-		fires.session_start!({ reason: "startup" }, ctx(scoped(...SAVED)));
-		fires.session_shutdown!({ reason: "quit" }, ctx(scoped(...SAVED)));
+		const c = ctx(scoped(...SAVED));
+		fires.session_start!({ reason: "startup" }, c);
+		fires.session_shutdown!({ reason: "quit" }, c);
 		expect(f.rawOverlay()).toBe(before);
 	});
 
@@ -120,14 +150,12 @@ describe("enabled-models", () => {
 	test("saves the delta, not an externally rewritten settings.json", async () => {
 		const f = fixture(SAVED);
 		const { fires, ctx } = await handlers();
-		fires.session_start!({ reason: "startup" }, ctx(scoped(...SAVED)));
-		const session = scoped("open-weights/deepseek-v4p1-flash-priority:high", "open-weights/kimi-k3-priority:high");
+		const c = ctx(scoped(...SAVED));
+		fires.session_start!({ reason: "startup" }, c);
+		const session = scoped("open-weights/deepseek-v4p1-flash-priority:high", KIMI);
 		writeFileSync(join(process.env.HOME!, ".pi", "agent", "settings.json"), JSON.stringify({ enabledModels: WIDE }));
 		fires.session_shutdown!({ reason: "quit" }, ctx(session));
-		expect(f.overlay()).toEqual([
-			"open-weights/deepseek-v4p1-flash-priority:high",
-			"open-weights/kimi-k3-priority:high",
-		]);
+		expect(f.overlay()).toEqual(["open-weights/deepseek-v4p1-flash-priority:high", KIMI]);
 	});
 
 	test("keeps thinking levels when pi's bare-id scope edit removes them", async () => {
@@ -135,44 +163,118 @@ describe("enabled-models", () => {
 		const { fires, ctx } = await handlers();
 		const bare = scoped("open-weights/deepseek-v4p1-flash-priority", "vertex-proxy/gemini-3.8-flash");
 		fires.session_start!({ reason: "startup" }, ctx(scoped(...SAVED)));
-		fires.session_shutdown!({ reason: "quit" }, ctx([...bare, ...scoped("open-weights/kimi-k3-priority")]));
-		expect(f.overlay()).toEqual([...SAVED, "open-weights/kimi-k3-priority"]);
+		fires.session_shutdown!({ reason: "quit" }, ctx([...bare, ...scoped(KIMI)]));
+		expect(f.overlay()).toEqual([...SAVED, KIMI]);
 	});
 
 	test("keeps entries this machine cannot resolve", async () => {
 		const f = fixture([...SAVED, "instacart-anthropic/claude-opus-5-5@default:high"]);
 		const { fires, ctx } = await handlers();
-		const session = scoped(...SAVED);
-		fires.session_start!({ reason: "startup" }, ctx(session));
+		const c = ctx(scoped(...SAVED));
+		fires.session_start!({ reason: "startup" }, c);
 		fires.session_shutdown!({ reason: "quit" }, ctx(scoped(SAVED[0]!)));
 		expect(f.overlay()).toEqual([SAVED[0]!, "instacart-anthropic/claude-opus-5-5@default:high"]);
 	});
 
 	test("accepts model ids containing slashes", async () => {
-		const fireworks = "open-weights/accounts/fireworks/models/deepseek-v4p1-flash-1017:high";
 		const f = fixture(SAVED);
 		const { fires, ctx } = await handlers();
 		fires.session_start!({ reason: "startup" }, ctx(scoped(...SAVED)));
-		fires.session_shutdown!({ reason: "quit" }, ctx(scoped(...SAVED, fireworks)));
-		expect(f.overlay()).toEqual([...SAVED, fireworks]);
+		fires.session_shutdown!({ reason: "quit" }, ctx(scoped(...SAVED, FIREWORKS)));
+		expect(f.overlay()).toEqual([...SAVED, FIREWORKS]);
 	});
 
 	test("restores a scope containing a slash model id", async () => {
-		const fireworks = "open-weights/accounts/fireworks/models/deepseek-v4p1-flash-1017:high";
-		const f = fixture([...SAVED, fireworks], { enabledModels: WIDE });
+		const f = fixture([...SAVED, FIREWORKS], { enabledModels: WIDE });
 		const { fires, notices, ctx } = await handlers();
-		fires.session_start!({ reason: "startup" }, ctx(scoped(...WIDE)));
-		expect(f.settings().enabledModels).toEqual([...SAVED, fireworks]);
+		const c = ctx(scoped(...WIDE));
+		fires.session_start!({ reason: "startup" }, c);
+		expect(f.settings().enabledModels).toEqual([...SAVED, FIREWORKS]);
+		expect(live(c)).toEqual([...SAVED, FIREWORKS]);
 		expect(notices.some((notice) => notice.includes("failed"))).toBe(false);
 	});
 
-	test("a session that had to be restored never saves over the overlay", async () => {
+	test("a session restored live saves later scope changes", async () => {
+		const f = fixture(SAVED, { enabledModels: WIDE });
+		const { fires, ctx } = await handlers();
+		const c = ctx(scoped(...WIDE));
+		fires.session_start!({ reason: "startup" }, c);
+		expect(live(c)).toEqual(SAVED);
+
+		fires.session_shutdown!({ reason: "quit" }, ctx(scoped(...SAVED, KIMI)));
+		expect(f.overlay()).toEqual([...SAVED, KIMI]);
+	});
+
+	test("reload applies an edited overlay without restarting", async () => {
+		const f = fixture(SAVED);
+		const { fires, notices, ctx } = await handlers();
+		const c = ctx(scoped(...SAVED));
+		fires.session_start!({ reason: "startup" }, c);
+		expect(notices).toEqual([]);
+
+		f.writeOverlay([...SAVED, KIMI]);
+		fires.session_shutdown!({ reason: "reload" }, c);
+		fires.session_start!({ reason: "reload" }, c);
+		expect(live(c)).toEqual([...SAVED, KIMI]);
+		expect(f.overlay()).toEqual([...SAVED, KIMI]);
+		expect(notices).toEqual(["Scoped models restored from the dotfiles list"]);
+	});
+
+	test("a level-only difference is not a scope change", async () => {
+		const f = fixture(SAVED);
+		const { fires, notices, ctx } = await handlers();
+		const bare = scoped("open-weights/deepseek-v4p1-flash-priority", "vertex-proxy/gemini-3.8-flash");
+		const c = ctx(bare);
+		fires.session_start!({ reason: "startup" }, c);
+		expect(live(c)).toEqual(refs(bare));
+		expect(notices).toEqual([]);
+	});
+
+	test("an explicit --models flag keeps the CLI scope", async () => {
+		const f = fixture(SAVED, { enabledModels: WIDE });
+		process.argv.push("--models");
+		try {
+			const { fires, notices, ctx } = await handlers();
+			const c = ctx(scoped(...WIDE));
+			fires.session_start!({ reason: "startup" }, c);
+			expect(live(c)).toEqual(WIDE);
+			expect(notices[0]).toContain("restart pi");
+			expect(f.settings().enabledModels).toEqual(SAVED);
+		} finally {
+			process.argv.splice(process.argv.lastIndexOf("--models"), 1);
+		}
+	});
+
+	test("a scope that cannot be adopted keeps the restart notice and blocks saving", async () => {
 		const f = fixture(SAVED, { enabledModels: WIDE });
 		const before = f.rawOverlay();
-		const { fires, ctx } = await handlers();
-		fires.session_start!({ reason: "startup" }, ctx(scoped(...WIDE)));
+		const { fires, notices, ctx } = await handlers();
+		const c = ctx(scoped(...WIDE), { snapshot: true });
+		fires.session_start!({ reason: "startup" }, c);
+		expect(live(c)).toEqual(WIDE);
+		expect(notices[0]).toContain("restart pi");
+
 		fires.session_shutdown!({ reason: "quit" }, ctx(scoped("a/one:high")));
 		expect(f.rawOverlay()).toBe(before);
+	});
+
+	test("keeps an overlay model the catalogue no longer resolves", async () => {
+		const f = fixture(["a/one:high", "b/two"], { enabledModels: WIDE });
+		const { fires, notices, ctx } = await handlers();
+		const c = ctx(scoped(...WIDE), { available: scoped("a/one", "c/three") });
+		fires.session_start!({ reason: "startup" }, c);
+		expect(live(c)).toEqual(["a/one:high", "b/two"]);
+		expect(notices).toEqual(["Scoped models restored from the dotfiles list"]);
+	});
+
+	test("an unresolvable overlay leaves the scope alone", async () => {
+		const f = fixture(["ghost/nope:high"], { enabledModels: WIDE });
+		const { fires, notices, ctx } = await handlers();
+		const c = ctx(scoped(...WIDE));
+		fires.session_start!({ reason: "startup" }, c);
+		expect(live(c)).toEqual(WIDE);
+		expect(notices[0]).toContain("restart pi");
+		expect(f.settings().enabledModels).toEqual(["ghost/nope:high"]);
 	});
 
 	test("clearing the scope saves an empty list", async () => {
@@ -191,7 +293,7 @@ describe("enabled-models", () => {
 		expect(f.settings().enabledModels).toEqual(WIDE);
 
 		const next = await handlers();
-		next.fires.session_start!({ reason: "startup" }, ctx(scoped(...WIDE)));
+		next.fires.session_start!({ reason: "startup" }, next.ctx(scoped(...WIDE)));
 		expect(next.notices).toEqual([]);
 	});
 

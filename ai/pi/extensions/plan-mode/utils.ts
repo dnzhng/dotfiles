@@ -3,22 +3,13 @@
  * Extracted for testability.
  */
 
+const cmdWords = (...words: string[]): RegExp[] =>
+	words.map((word) => new RegExp(`(?<![\\w.-])(?:${word})(?![\\w./-])`, "i"));
+
 // Destructive commands blocked in plan mode
 const DESTRUCTIVE_PATTERNS = [
-	/\brm\b/i,
-	/\brmdir\b/i,
-	/\bmv\b/i,
-	/\bcp\b/i,
-	/\bmkdir\b/i,
-	/\btouch\b/i,
-	/\bchmod\b/i,
-	/\bchown\b/i,
-	/\bchgrp\b/i,
-	/\bln\b/i,
-	/\btee\b/i,
-	/\btruncate\b/i,
-	/\bdd\b/i,
-	/\bshred\b/i,
+	...cmdWords("rm", "rmdir", "mv", "cp", "mkdir", "touch", "chmod", "chown", "chgrp", "ln", "tee", "truncate", "dd", "shred"),
+	/@P\s*\}/,
 	/(^|[^<])>(?!>)/,
 	/>>/,
 	/\bnpm\s+(install|uninstall|update|ci|link|publish)/i,
@@ -29,16 +20,12 @@ const DESTRUCTIVE_PATTERNS = [
 	/\bbrew\s+(install|uninstall|upgrade)/i,
 	/\bgit\s+(add|commit|push|pull|merge|rebase|reset|checkout|branch\s+-[dD]|stash(?!\s+(list|show)\b)|cherry-pick|revert|tag|init|clone)/i,
 	/\bgh\s+api\b[^|;&]*(-[fFX]\b|--field|--raw-field|--input|--method)/i,
-	/\bsudo\b/i,
-	/\bsu\b/i,
-	/\bkill\b/i,
-	/\bpkill\b/i,
-	/\bkillall\b/i,
+	...cmdWords("sudo", "su", "kill", "pkill", "killall"),
 	/\breboot\b/i,
 	/\bshutdown\b/i,
 	/\bsystemctl\s+(start|stop|restart|enable|disable)/i,
 	/\bservice\s+\S+\s+(start|stop|restart)/i,
-	/\b(vim?|nano|emacs|code|subl)\b/i,
+	...cmdWords("vi", "vim", "nano", "emacs", "code", "subl"),
 ];
 
 // Safe read-only commands allowed in plan mode
@@ -53,6 +40,8 @@ const SAFE_PATTERNS = [
 	/^\s*ls\b/,
 	/^\s*pwd\b/,
 	/^\s*echo\b/,
+	/^\s*read\b/,
+	/^\s*(?:test\b|\[\s)/,
 	/^\s*printf\b/,
 	/^\s*wc\b/,
 	/^\s*sort\b/,
@@ -108,12 +97,48 @@ const SAFE_PATTERNS = [
 	/^\s*dirname\b/,
 ];
 
+function isSafeSegment(segment: string): boolean {
+	let command = segment.trim();
+	while (/^(?:(?:if|then|else|elif|do|while|until)\b|!)\s*/.test(command)) {
+		command = command.replace(/^(?:(?:if|then|else|elif|do|while|until)\b|!)\s*/, "");
+	}
+	command = command.replace(/^\{\s*/, "").trim();
+	if (!command || /^["'<>$]+$/.test(command) || /^(?:done|fi|esac|})\s*$/.test(command)) return true;
+	if (/^cd(?:\s|$)/.test(command) || /^for\s+\w+\s+in\b/.test(command)) return true;
+	if (command.match(/^\S+/)?.[0].includes("/")) return false;
+	if (/^\s*read\b/.test(command) && /[\[$`]/.test(command)) return false;
+	return SAFE_PATTERNS.some((pattern) => pattern.test(command));
+}
+
 export function isSafeCommand(command: string): boolean {
+	if (!command.trim() || /(?<!<)<<(?!<)/.test(command)) return false;
+	const unquoted = command.replace(/['"\\]/g, "");
+	if (
+		/\$\{!|\(\(|\$\[|\$\{[^}]*\[|\$\{[^}]*:(?![-=?+])/.test(command) ||
+		/(?:\btest|\[)(?=\s)[^;&|\n]*-v/.test(unquoted) ||
+		/(?<![\w.-])printf\b[^;&|\n]*-v/.test(command) ||
+		/(?<![\w.-])read\b[^;&|\n]*['"\\\[$`]/.test(command)
+	) return false;
 	// Benign redirects (stderr to stdout, anything to /dev/null) write no files — strip before matching
-	const sanitized = command.replace(/[12&]?>{1,2}\s*(?:&[12]|\/dev\/null)\b/g, "");
-	const isDestructive = DESTRUCTIVE_PATTERNS.some((p) => p.test(sanitized));
-	const isSafe = SAFE_PATTERNS.some((p) => p.test(sanitized));
-	return !isDestructive && isSafe;
+	const sanitized = command
+		.replace(/[12&]?>{1,2}\s*(?:&[12]|\/dev\/null)\b/g, "")
+		.replace(/[12&]?>{1,2}\s*\/tmp\/(?![^\s;|&]*\.\.)[\w./-]+(?=$|[\s;|&)<])/g, "");
+	const isDestructive = DESTRUCTIVE_PATTERNS.some((pattern) => pattern.test(sanitized));
+	if (isDestructive) return false;
+
+	let hasMultilineQuote = false;
+	let hasComplexSubstitution = false;
+	const masked = sanitized.replace(/\$'(?:[^'\\]|\\[\s\S])*'|'[^']*'|"(?:[^"\\]|\\[\s\S])*"|\\[\s\S]/g, (match) => {
+		if (match.includes("\n")) hasMultilineQuote = true;
+		if (match.startsWith('"') && /\$\(|`/.test(match)) {
+			if (!/^"(?:[^"\\$`]|\\.|\$(?!\()|\$\([^()"`]*\))*"$/.test(match)) hasComplexSubstitution = true;
+			return match;
+		}
+		return "_".repeat(match.length);
+	});
+	if (hasMultilineQuote || hasComplexSubstitution || /(^|\s)#/.test(masked)) return false;
+	const segments = masked.split(/[;&|\n()`]+/);
+	return segments.length > 0 && segments.every(isSafeSegment);
 }
 
 export interface TodoItem {

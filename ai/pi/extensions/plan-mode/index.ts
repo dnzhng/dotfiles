@@ -152,6 +152,16 @@ function getTextContent(message: AssistantMessage): string {
 		.join("\n");
 }
 
+function getCompletionText(message: AssistantMessage): string {
+	return message.content
+		.map((block) => {
+			if (block.type === "text") return block.text;
+			if (block.type === "thinking") return block.thinking;
+			return "";
+		})
+		.join("\n");
+}
+
 // Extract text content from a user message (string or block content)
 function getUserText(message: AgentMessage): string | undefined {
 	if (message.role !== "user") return undefined;
@@ -489,12 +499,13 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		// Widget showing todo list — suppressed when the sidebar is live (no double display).
 		if (executionMode && todoItems.length > 0 && !getBus().capable) {
 			const lines = todoItems.map((item) => {
+				const text = item.text.length > 60 ? `${item.text.slice(0, 57)}...` : item.text;
 				if (item.completed) {
 					return (
-						ctx.ui.theme.fg("success", "☑ ") + ctx.ui.theme.fg("muted", ctx.ui.theme.strikethrough(item.text))
+						ctx.ui.theme.fg("success", "☑ ") + ctx.ui.theme.fg("muted", ctx.ui.theme.strikethrough(text))
 					);
 				}
-				return `${ctx.ui.theme.fg("muted", "☐ ")}${item.text}`;
+				return `${ctx.ui.theme.fg("muted", "☐ ")}${text}`;
 			});
 			ctx.ui.setWidget("plan-todos", lines);
 		} else {
@@ -875,7 +886,7 @@ ${reviewLine ? `${reviewLine}\n` : ""}Do not commit anything unless the user exp
 		if (!executionMode || todoItems.length === 0) return;
 		if (!isAssistantMessage(event.message)) return;
 
-		const text = getTextContent(event.message);
+		const text = getCompletionText(event.message);
 		if (markCompletedSteps(text, todoItems) > 0) {
 			updateStatus(ctx);
 		}
@@ -1056,7 +1067,7 @@ changed-file list so it strips over-added comments per the AGENTS.md zero-commen
 					messages.push(entry.message as AssistantMessage);
 				}
 			}
-			const allText = messages.map(getTextContent).join("\n");
+			const allText = messages.map(getCompletionText).join("\n");
 			markCompletedSteps(allText, todoItems);
 		}
 

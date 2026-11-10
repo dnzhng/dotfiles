@@ -257,10 +257,10 @@ dropped by the next install run.
 
 `packages` only lists packages this repo owns (currently `npm:pi-subagents`).
 Some pi packages (`pi-web-access`, `@ff-labs/pi-fff`) are managed externally —
-they're merged into `~/.pi/agent/settings.json` as version-pinned entries by
-an outside installer/hook, and their updates flow through that channel, not
-`pi update`. Don't add them here unpinned: the union merge would create both
-forms and pi would load each package's extension twice. Deliberately NOT a symlink —
+Gohan's `pi-config` hook merges them into `~/.pi/agent/settings.json` and owns
+their declarations. Don't add them here: the union merge would keep entries
+that Gohan later removes, and a stale second spelling can make pi load the
+extension twice. Deliberately NOT a symlink —
 pi rewrites settings.json at runtime, which would dirty the repo and leak
 machine-specific providers to machines that don't have them.
 
@@ -275,6 +275,30 @@ machine, port it into `settings.base.json`, commit, and re-run install.sh
 elsewhere. Note a running pi session rewrites settings.json from in-memory
 state and can clobber a fresh merge — re-run install.sh with pi closed (or
 just /reload and re-check) if a key seems to vanish.
+
+## Updates
+
+`pi update` updates Pi itself. `settings.base.json` sets `selfUpdateCommand`
+to `["gohan", "update", "pi"]` (the normal install merge writes it to
+`~/.pi/agent/settings.json`), so Pi runs the same Gohan install/update path
+that owns the `pi` wrapper and version switch instead of replacing an npm
+package underneath it. The configured command runs only when pi.dev reports a
+newer release (or with `--force`); running `gohan update pi` directly does the
+same binary update.
+
+This only changes how the Pi binary is updated. It does not restore
+`enabledModels`: the [Scoped models](#scoped-models) restore still happens at
+session start and in `install.sh`/`/sync`, which remains the path that undoes a
+Gohan `pi-config` rewrite.
+
+Pi package updates are separate. `pi update --extensions` reconciles the Pi
+package sources (`npm:`/`git:`) declared in `~/.pi/agent/settings.json`; only
+unpinned npm sources are updated, so version-pinned entries are skipped. That
+is also how the external `pi-web-access` and `@ff-labs/pi-fff` packages update
+while Gohan's shared entries are unpinned (see [Settings](#settings)); their
+declarations and managed model config belong to Gohan's `pi-config` hook.
+`pi update --all` runs both: Pi's package update, then the Pi binary through
+Gohan.
 
 ## Scoped models
 
@@ -300,10 +324,10 @@ which `apply-models.sh` rejects. pi itself also accepts those forms, but a
 removed glob can't be identified on another machine.
 
 The save source is the live session scope, never `settings.json`: Gohan's
-`pi-config` update hook rewrites `enabledModels` as "every shared model" on
-each pi update, and an external write can't change a running session's scope,
-so its list isn't captured as your selection. Instead the extension rewrites
-the running scope in place, matching the overlay against the model catalogue,
+`pi-config` hook can rewrite `enabledModels` as "every shared model" when it
+runs, and an external write can't change a running session's scope, so its
+list isn't captured as your selection. Instead the extension rewrites the
+running scope in place, matching the overlay against the model catalogue,
 so the restore applies without a restart. Session-only `/scoped-models`
 toggles are saved too — every session end (quit, `/new`, `/resume`, `/fork`,
 `/reload`) makes them permanent. Picking a default model outside the scope

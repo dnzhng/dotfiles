@@ -161,9 +161,6 @@ export function cleanStepText(text: string): string {
 	if (cleaned.length > 0) {
 		cleaned = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
 	}
-	if (cleaned.length > 50) {
-		cleaned = `${cleaned.slice(0, 47)}...`;
-	}
 	return cleaned;
 }
 
@@ -179,13 +176,10 @@ export function extractTodoItems(message: string): TodoItem[] {
 	// sections (## Verification, etc.) are not plan steps.
 	const sectionEnd = planSection.search(/^#{1,6}\s|^[ \t]*-{3,}[ \t]*$/m);
 	if (sectionEnd >= 0) planSection = planSection.slice(0, sectionEnd);
-	const numberedPattern = /^\s*(\d+)[.)]\s+\*{0,2}([^*\n]+)/gm;
+	const numberedPattern = /^\s*(\d+)[.)]\s+(.+)$/gm;
 
 	for (const match of planSection.matchAll(numberedPattern)) {
-		const text = match[2]
-			.trim()
-			.replace(/\*{1,2}$/, "")
-			.trim();
+		const text = match[2].trim();
 		if (text.length > 5 && !text.startsWith("/") && !text.startsWith("-")) {
 			const cleaned = cleanStepText(text);
 			if (cleaned.length > 3) {
@@ -198,20 +192,31 @@ export function extractTodoItems(message: string): TodoItem[] {
 
 export function extractDoneSteps(message: string): number[] {
 	const steps: number[] = [];
-	for (const match of message.matchAll(/\[DONE:(\d+)\]/gi)) {
-		const step = Number(match[1]);
-		if (Number.isFinite(step)) steps.push(step);
+	for (const match of message.matchAll(/\[DONE\s*:?\s*(\d+)\]/gi)) {
+		steps.push(Number(match[1]));
 	}
-	return steps;
+	for (const match of message.matchAll(/(?<!\bnot\s+)\bDone\s*:\s*(\d+)\b/gi)) {
+		steps.push(Number(match[1]));
+	}
+	for (const match of message.matchAll(
+		/(?:^|[.!?]\s+)\s*(?:[-*]\s+)?Step\s*(\d+)\s+(?:is\s+)?(?:done|complete|completed|finished)(?=[.!](?:\s|$)|\s*$)/gim,
+	)) {
+		steps.push(Number(match[1]));
+	}
+	return [...new Set(steps)];
 }
 
 export function markCompletedSteps(text: string, items: TodoItem[]): number {
 	const doneSteps = extractDoneSteps(text);
+	let marked = 0;
 	for (const step of doneSteps) {
-		const item = items.find((t) => t.step === step);
-		if (item) item.completed = true;
+		const item = items.find((t) => t.step === step && !t.completed);
+		if (item) {
+			item.completed = true;
+			marked++;
+		}
 	}
-	return doneSteps.length;
+	return marked;
 }
 
 /**

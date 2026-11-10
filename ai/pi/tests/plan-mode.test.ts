@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, mock, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -54,7 +54,7 @@ const noThinkingModel: FakeModel = { provider: "p", id: "plain", levels: ["off"]
 interface Harness {
 	commands: Map<string, (args: string | undefined, ctx: unknown) => Promise<void>>;
 	handlers: Map<string, ((event: unknown, ctx: unknown) => Promise<unknown>)[]>;
-	entries: { type: string; customType?: string; data?: Record<string, unknown> }[];
+	entries: { type: string; customType?: string; data?: Record<string, unknown>; message?: unknown }[];
 	sentMessages: { customType?: string; content?: string }[];
 	sentUserMessages: { content: unknown; options?: Record<string, unknown> }[];
 	events: string[];
@@ -182,10 +182,24 @@ function makeCtx(options: CtxOptions = {}) {
 
 type Ctx = ReturnType<typeof makeCtx>;
 
-async function runAgentEnd(h: Harness, ctx: Ctx): Promise<void> {
+async function runAgentEnd(
+	h: Harness,
+	ctx: Ctx,
+	content: unknown[] = [{ type: "text", text: PLAN_TEXT }],
+): Promise<void> {
 	const handler = h.handlers.get("agent_end")?.[0];
 	if (!handler) throw new Error("agent_end handler not registered");
-	await handler({ messages: [{ role: "assistant", content: [{ type: "text", text: PLAN_TEXT }] }] }, ctx);
+	await handler({ messages: [{ role: "assistant", content }] }, ctx);
+}
+
+async function runTurnEnd(h: Harness, ctx: Ctx, content: unknown[]): Promise<void> {
+	const handler = h.handlers.get("turn_end")?.[0];
+	if (!handler) throw new Error("turn_end handler not registered");
+	await handler({ message: { role: "assistant", content } }, ctx);
+}
+
+function executionEntries(todos: { step: number; text: string; completed: boolean }[]): Harness["entries"] {
+	return [{ type: "custom", customType: "plan-mode", data: { enabled: false, todos, executing: true } }];
 }
 
 async function runSessionStart(h: Harness, ctx: Ctx, reason: string): Promise<void> {
@@ -775,5 +789,209 @@ describe("model picker ordering", () => {
 			"p/pre-plan",
 			"p/plain",
 		]);
+	});
+});
+
+describe("progress tracking", () => {
+	test("recognizes completion markers in thinking blocks", async () => {
+		const h = await loadExtension();
+		const ctx = makeCtx({
+			entries: executionEntries([
+				{ step: 1, text: "First step", completed: false },
+				{ step: 2, text: "Second step", completed: false },
+			]),
+		});
+		await runSessionStart(h, ctx, "resume");
+
+		await runTurnEnd(h, ctx, [
+			{ type: "thinking", thinking: "Step 1 is complete." },
+			{ type: "text", text: "Continuing with the next step." },
+		]);
+
+		expect(lastEntry(h).todos).toEqual([
+			{ step: 1, text: "First step", completed: true },
+			{ step: 2, text: "Second step", completed: false },
+		]);
+	});
+
+	test("recognizes visible marker variants and affirmative Step phrasing", async () => {
+		const h = await loadExtension();
+		const ctx = makeCtx({
+			entries: executionEntries([
+				{ step: 1, text: "First step", completed: false },
+				{ step: 2, text: "Second step", completed: false },
+				{ step: 3, text: "Third step", completed: false },
+			]),
+		});
+		await runSessionStart(h, ctx, "resume");
+
+		await runTurnEnd(h, ctx, [{ type: "text", text: "[DONE 1] Done: 2. Step 3 is complete." }]);
+
+		expect(lastEntry(h).todos).toEqual([
+			{ step: 1, text: "First step", completed: true },
+			{ step: 2, text: "Second step", completed: true },
+			{ step: 3, text: "Third step", completed: true },
+		]);
+	});
+
+	test("does not advance on negative or unrelated phrasing", async () => {
+		const h = await loadExtension();
+		const ctx = makeCtx({
+			entries: executionEntries([
+				{ step: 1, text: "First step", completed: false },
+				{ step: 2, text: "Second step", completed: false },
+			]),
+		});
+		await runSessionStart(h, ctx, "resume");
+
+		await runTurnEnd(h, ctx, [
+			{ type: "text", text: "Step 1 is not done. Step 2 incomplete. Not done: 1. [DONE:99]" },
+		]);
+
+		expect(lastEntry(h).todos).toEqual([
+			{ step: 1, text: "First step", completed: false },
+			{ step: 2, text: "Second step", completed: false },
+		]);
+	});
+
+	test("does not double-count repeated markers", async () => {
+		const h = await loadExtension();
+		const ctx = makeCtx({
+			entries: executionEntries([{ step: 1, text: "First step", completed: false }]),
+		});
+		await runSessionStart(h, ctx, "resume");
+
+		await runTurnEnd(h, ctx, [
+			{ type: "text", text: "[DONE:1] [DONE 1] Done: 1 Step 1 is complete" },
+		]);
+		await runTurnEnd(h, ctx, [{ type: "text", text: "Step 1 is complete" }]);
+
+		expect(lastEntry(h).todos).toEqual([{ step: 1, text: "First step", completed: true }]);
+	});
+
+	test("restores completion markers from thinking on resume", async () => {
+		const h = await loadExtension();
+		const ctx = makeCtx({
+			entries: [
+				...executionEntries([
+					{ step: 1, text: "First step", completed: false },
+					{ step: 2, text: "Second step", completed: false },
+				]),
+				{ type: "custom", customType: "plan-mode-execute", data: {} },
+				{
+					type: "message",
+					message: { role: "assistant", content: [{ type: "thinking", thinking: "[DONE:2]" }] },
+				},
+			],
+		});
+		await runSessionStart(h, ctx, "resume");
+		await runTurnEnd(h, ctx, [{ type: "text", text: "" }]);
+
+		expect(lastEntry(h).todos).toEqual([
+			{ step: 1, text: "First step", completed: false },
+			{ step: 2, text: "Second step", completed: true },
+		]);
+	});
+
+	test.each([
+		"All steps are complete.",
+		"Once the plan is complete, run verification.",
+		"All steps are done, except step 3.",
+	])("does not infer completion from a whole-plan summary: %s", async (text) => {
+		const h = await loadExtension();
+		const ctx = makeCtx({
+			entries: executionEntries([
+				{ step: 1, text: "First step", completed: false },
+				{ step: 2, text: "Second step", completed: false },
+			]),
+		});
+		await runSessionStart(h, ctx, "resume");
+		await runTurnEnd(h, ctx, [{ type: "text", text: "Working." }]);
+
+		await runAgentEnd(h, ctx, [{ type: "text", text }]);
+
+		expect(h.sentMessages).toEqual([]);
+		expect(lastEntry(h).executing).toBe(true);
+		expect(lastEntry(h).todos).toEqual([
+			{ step: 1, text: "First step", completed: false },
+			{ step: 2, text: "Second step", completed: false },
+		]);
+	});
+
+	test("does not complete the plan on a negative visible summary", async () => {
+		const h = await loadExtension();
+		const ctx = makeCtx({
+			entries: executionEntries([
+				{ step: 1, text: "First step", completed: false },
+				{ step: 2, text: "Second step", completed: false },
+			]),
+		});
+		await runSessionStart(h, ctx, "resume");
+		await runTurnEnd(h, ctx, [{ type: "text", text: "Working." }]);
+
+		await runAgentEnd(h, ctx, [{ type: "text", text: "The plan is not complete; not all steps are done yet." }]);
+
+		expect(h.sentMessages).toEqual([]);
+		expect(lastEntry(h).executing).toBe(true);
+		expect(lastEntry(h).todos).toEqual([
+			{ step: 1, text: "First step", completed: false },
+			{ step: 2, text: "Second step", completed: false },
+		]);
+	});
+
+	test("does not complete the plan from thinking-only summary text", async () => {
+		const h = await loadExtension();
+		const ctx = makeCtx({
+			entries: executionEntries([
+				{ step: 1, text: "First step", completed: false },
+				{ step: 2, text: "Second step", completed: false },
+			]),
+		});
+		await runSessionStart(h, ctx, "resume");
+		await runTurnEnd(h, ctx, [{ type: "text", text: "Working." }]);
+
+		await runAgentEnd(h, ctx, [
+			{ type: "thinking", thinking: "All steps are complete." },
+			{ type: "text", text: "Still finishing the last step." },
+		]);
+
+		expect(h.sentMessages).toEqual([]);
+		expect(lastEntry(h).executing).toBe(true);
+		expect(lastEntry(h).todos).toEqual([
+			{ step: 1, text: "First step", completed: false },
+			{ step: 2, text: "Second step", completed: false },
+		]);
+	});
+});
+
+describe("plan extraction and persistence", () => {
+	test("saves visible plan text with full step text and ignores reasoning drafts", async () => {
+		const h = await loadExtension();
+		const ctx = makeCtx({ selects: [STAY_ACTION] });
+		await enterPlanMode(h, ctx);
+
+		const visible = [
+			"Title: Full text plan",
+			"",
+			"## Plan",
+			"1. **Investigate** the `plan-mode` parser path for steps that contain **bold**, `code`, and a long verify command — verify: bun test ai/pi/tests/plan-mode-progress.test.ts",
+			"2. Document the parser change",
+		].join("\n");
+		await runAgentEnd(h, ctx, [
+			{ type: "thinking", thinking: "## Plan\n1. Draft step from reasoning that must not be saved" },
+			{ type: "text", text: visible },
+		]);
+
+		const todos = lastEntry(h).todos as { text: string; completed: boolean }[];
+		expect(todos).toHaveLength(2);
+		expect(todos[0]?.text).toBe(
+			"Investigate the plan-mode parser path for steps that contain bold, code, and a long verify command — verify: bun test ai/pi/tests/plan-mode-progress.test.ts",
+		);
+		expect(todos[0]?.text.endsWith("...")).toBe(false);
+
+		const planFile = lastEntry(h).lastPlanFile as string;
+		const saved = readFileSync(planFile, "utf8");
+		expect(saved).toContain("verify: bun test ai/pi/tests/plan-mode-progress.test.ts");
+		expect(saved).not.toContain("Draft step from reasoning");
 	});
 });

@@ -4,6 +4,10 @@ import { isSafeCommand } from "../extensions/plan-mode/utils.ts";
 describe("isSafeCommand", () => {
 	test.each([
 		"git -C /Users/danzhang/Code/carrot log --oneline -1",
+		"bk build view 767363 -p instacart/carrot-customers-customers-backend",
+		"bk job log 12345",
+		"bk pipeline list",
+		"bk whoami",
 		"cd ~/Code/carrot 2>/dev/null || cd ~/carrot; gh pr view 1 --json title -q '.title'",
 		"cd /x && git log --oneline -1 && git status -sb | head -3; ls foo/ 2>&1",
 		'cd d && for f in c/*.yaml; do echo "=== $f"; cat $f; done',
@@ -25,6 +29,8 @@ describe("isSafeCommand", () => {
 
 	test.each([
 		"ls; python evil.py",
+		"bk build create 767363",
+		"bk job cancel 12345",
 		"cat x && rm y",
 		"ls | xargs rm",
 		"echo $(touch x)",

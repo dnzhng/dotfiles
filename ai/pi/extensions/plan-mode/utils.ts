@@ -59,6 +59,7 @@ const SAFE_PATTERNS = [
 	/^\s*printenv\b/,
 	/^\s*uname\b/,
 	/^\s*whoami\b/,
+	/^\s*bk\s+(build\s+(view|list)|job\s+(view|log|list)|pipeline\s+(view|list)|whoami)\b/i,
 	/^\s*id\b/,
 	/^\s*date\b/,
 	/^\s*cal\b/,

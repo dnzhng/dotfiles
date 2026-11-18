@@ -89,7 +89,7 @@ export function registerWorker(pi: ExtensionAPI): (() => void) | undefined {
 		definition: {
 			description: "In-place Conductor worker",
 			systemPrompt: [
-				"Implement only the supplied self-contained task in the current checkout.",
+				"Implement only the supplied self-contained task. Use the launch checkout by default unless the task brief specifies another checkout or worktree.",
 				"Follow the inherited project/global instructions.",
 				"Unless the task brief explicitly directs otherwise, do not commit, push, create or switch branches, or create linked worktrees.",
 				"Do not delegate. Git status/diff inspection is allowed.",

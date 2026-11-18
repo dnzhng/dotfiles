@@ -29,6 +29,7 @@ const DIRECTOR_PROMPT = [
 	"Cancel starts nothing. There is no classifier call.",
 	"",
 	"Give the worker the complete self-contained brief and required project context. The brief may explicitly authorize git/worktree actions for the worker.",
+	"Use conductor_worker, not a native subagent launch, to launch or resume the owned Conductor worker.",
 	"Use subagent_supervisor only for coordination: inspect status/pending/list and reply to an exact pending ask.",
 	"Read the exact ask. Reply to harmless confirmations and known decisions; never approve out-of-scope writes.",
 	"If an ask requires materially new authority, ask the user. The worker should use contact_supervisor need_decision only when truly blocked; never make routine asks, and use native completion to finish.",
@@ -52,7 +53,6 @@ const TargetSchema = Type.Object({
 	query: Type.Optional(Type.String()),
 	message: Type.Optional(Type.String()),
 });
-interface StoredEntry { type: string; customType?: string; data?: NativeState }
 interface ToolResult { content: { type: "text"; text: string }[]; details: Record<string, unknown> }
 
 function textResult(text: string, details: Record<string, unknown> = {}): ToolResult {
@@ -60,15 +60,23 @@ function textResult(text: string, details: Record<string, unknown> = {}): ToolRe
 }
 
 function planActive(ctx: ExtensionContext): boolean {
-	const entries = ctx.sessionManager.getEntries() as StoredEntry[];
-	const plan = entries
+	const entries = ctx.sessionManager.getEntries();
+	const planEntry = entries
 		.filter((entry) => entry.type === "custom" && entry.customType === "plan-mode")
-		.at(-1)?.data as { enabled?: boolean; executing?: boolean } | undefined;
+		.at(-1);
+	const plan = planEntry?.type === "custom"
+		? planEntry.data as { enabled?: boolean; executing?: boolean } | undefined
+		: undefined;
 	return plan?.enabled === true || plan?.executing === true;
 }
 
 function entryFor(state: NativeState, owner: string): NativeState & { owner: string } {
-	return { ...state, owner };
+	return {
+		enabled: state.enabled,
+		...(state.run ? { run: { ...state.run } } : {}),
+		...(state.retained ? { retained: { ...state.retained } } : {}),
+		owner,
+	};
 }
 
 export default function conductor(pi: ExtensionAPI): void {
@@ -79,17 +87,57 @@ export default function conductor(pi: ExtensionAPI): void {
 	let terminalUnsubscribe: (() => void) | undefined;
 	const persist = () => pi.appendEntry("conductor-mode", entryFor(state, owner));
 
-	function setTools(enabled: boolean): string[] {
-		const current = pi.getActiveTools();
+	function recoveryTools(ctx: ExtensionContext): string[] {
+		if (planActive(ctx)) return [];
+		const eligible = new Set<string>();
+		let snapshot: string[] | undefined;
+		let legacySectionEffective = false;
+		const declared = new Set<string>();
+		for (const entry of ctx.sessionManager.getBranch()) {
+			if (entry.type === "custom" && entry.customType === "conductor-mode") {
+				const data = entry.data as (NativeState & { original?: string[]; owner?: string }) | undefined;
+				if (data?.owner === owner && Array.isArray(data.original)) {
+					snapshot = data.original;
+					eligible.clear();
+					if (legacySectionEffective) {
+						for (const name of snapshot) if (!declared.has(name)) eligible.add(name);
+					}
+				}
+				continue;
+			}
+			if (entry.type !== "message" || entry.message.role !== "system") continue;
+			const message = entry.message;
+			const section = message.sections?.["conductor-director"];
+			if (section !== undefined) {
+				legacySectionEffective = typeof section === "string" && section.includes("All other tool calls are blocked, including indirect and nested calls.");
+				if (legacySectionEffective) {
+					eligible.clear();
+					if (snapshot) for (const name of snapshot) if (!declared.has(name)) eligible.add(name);
+				}
+			}
+			for (const tool of message.toolsRemoved ?? []) {
+				declared.delete(tool.name);
+				if (legacySectionEffective && snapshot?.includes(tool.name)) eligible.add(tool.name);
+				else eligible.delete(tool.name);
+			}
+			for (const tool of message.toolsAdded ?? []) {
+				declared.add(tool.name);
+				eligible.delete(tool.name);
+			}
+		}
+		const registered = new Set(pi.getAllTools().map((tool) => tool.name));
+		return [...eligible].filter((name) => registered.has(name));
+	}
+
+	function setTools(enabled: boolean, migration: string[] = []): void {
+		const current = [...new Set([...pi.getActiveTools(), ...migration])];
 		if (!enabled) {
-			const tools = current.filter((name) => name !== "conductor_worker");
-			pi.setActiveTools(tools);
-			return tools;
+			pi.setActiveTools(current.filter((name) => name !== "conductor_worker"));
+			return;
 		}
 		const registered = new Set(pi.getAllTools().map((tool) => tool.name));
 		const tools = [...new Set([...current, "conductor_worker"])].filter((name) => registered.has(name));
 		pi.setActiveTools(tools);
-		return tools;
 	}
 
 	function blocked(reason: string): ToolResult {
@@ -384,10 +432,11 @@ export default function conductor(pi: ExtensionAPI): void {
 	});
 	pi.on("before_agent_start", async (event, _ctx) => {
 		if (!state.enabled) {
+			setTools(false, recoveryTools(_ctx));
 			delete event.systemPromptOptions.sections["conductor-director"];
 			return;
 		}
-		setTools(true);
+		setTools(true, recoveryTools(_ctx));
 		event.systemPromptOptions.sections["conductor-director"] = DIRECTOR_PROMPT;
 	});
 	pi.on("context", async (event) => ({
@@ -395,17 +444,22 @@ export default function conductor(pi: ExtensionAPI): void {
 	}));
 	pi.on("session_start", async (_event, ctx) => {
 		const sessionOwner = ctx.sessionManager.getSessionId();
-		if (owner && owner !== sessionOwner) {
-			setTools(false);
-			state = { enabled: false };
-		}
 		owner = sessionOwner;
-		const entries = ctx.sessionManager.getEntries() as StoredEntry[];
-		const previous = entries
-			.filter((entry) => entry.type === "custom" && entry.customType === "conductor-mode" && entry.data?.owner === owner)
-			.at(-1)?.data;
+		const entries = ctx.sessionManager.getEntries();
+		const previousEntry = entries
+			.filter((entry) => entry.type === "custom" && entry.customType === "conductor-mode")
+			.filter((entry) => entry.type === "custom" && (entry.data as { owner?: string } | undefined)?.owner === owner)
+			.at(-1);
+		const previous = previousEntry?.type === "custom"
+			? previousEntry.data as (NativeState & { owner?: string }) | undefined
+			: undefined;
 		const oldRun = previous?.run;
-		state = previous ? { ...previous } : { enabled: false };
+		state = previous ? {
+			enabled: previous.enabled,
+			...(previous.run ? { run: { ...previous.run } } : {}),
+			...(previous.retained ? { retained: { ...previous.retained } } : {}),
+		} : { enabled: false };
+
 		let repairedState = false;
 		if (oldRun?.status === "pending" && !oldRun.runId && !oldRun.asyncId) {
 			state.run = undefined;
@@ -419,7 +473,7 @@ export default function conductor(pi: ExtensionAPI): void {
 		registration = registerWorker(pi);
 		nativeReady = false;
 		try { await rpc(pi, "ping", {}, crypto.randomUUID(), 5000); nativeReady = !!registration; } catch { nativeReady = false; }
-		if (state.enabled) setTools(true);
+		setTools(state.enabled, recoveryTools(ctx));
 
 		terminalUnsubscribe?.();
 		terminalUnsubscribe = pi.events.on("subagent:process-terminal", (event) => {
@@ -446,6 +500,9 @@ export default function conductor(pi: ExtensionAPI): void {
 		if (!unresolved()) return;
 		ctx.ui.notify("Cannot change the session tree while Conductor owns an unresolved worker.", "warning");
 		return { cancel: true };
+	});
+	pi.on("session_tree", async (_event, ctx) => {
+		setTools(state.enabled, recoveryTools(ctx));
 	});
 	pi.on("session_shutdown", async () => {
 		registration?.();

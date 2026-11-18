@@ -3,7 +3,17 @@ import { describe, expect, mock, test } from "bun:test";
 interface FakeModel { provider: string; id: string; name: string; levels: string[] }
 interface RpcReply { success?: boolean; data?: { text?: string; details?: Record<string, unknown> }; error?: { code?: string; message?: string } }
 mock.module("typebox", () => ({ Type: new Proxy({}, { get: (_target, key) => (...args: unknown[]) => ({ key, args }) }) }));
-mock.module("@earendil-works/pi-ai", () => ({ getSupportedThinkingLevels: (model: FakeModel) => model.levels }));
+mock.module("@earendil-works/pi-ai", () => ({
+	getSupportedThinkingLevels: (model: FakeModel) => model.levels,
+	getCurrentTools: (messages: { toolsAdded?: { name: string }[]; toolsRemoved?: { name: string }[] }[]) => {
+		const tools = new Map<string, { name: string }>();
+		for (const message of messages) {
+			for (const tool of message.toolsRemoved ?? []) tools.delete(tool.name);
+			for (const tool of message.toolsAdded ?? []) tools.set(tool.name, tool);
+		}
+		return [...tools.values()];
+	},
+}));
 
 interface FakeContext {
 	cwd: string;
@@ -11,7 +21,7 @@ interface FakeContext {
 	mode: "tui";
 	scopedModels: { model: FakeModel }[];
 	modelRegistry: { getAvailable(): FakeModel[] };
-	sessionManager: { getSessionId(): string; getEntries(): FakeEntry[] };
+	sessionManager: { getSessionId(): string; getEntries(): FakeEntry[]; getBranch(): FakeEntry[] };
 	ui: {
 		select(title: string, options: string[]): Promise<string | undefined>;
 		notify(message: string, type?: string): void;
@@ -19,7 +29,7 @@ interface FakeContext {
 		theme: { fg(color: string, text: string): string };
 	};
 }
-interface FakeEntry { type: string; customType?: string; data?: Record<string, unknown> }
+interface FakeEntry { type: string; customType?: string; data?: Record<string, unknown>; message?: { role: string; sections?: Record<string, string | null>; toolsAdded?: { name: string }[]; toolsRemoved?: { name: string }[] } }
 interface FakeRequest { version: 1; requestId: string; method: string; params: Record<string, unknown> }
 interface RuntimeRegistration { version: 1; name: string; definition: Record<string, unknown>; result?: unknown }
 interface FakeTool { name: string; exposure?: string; defaultActive?: boolean; execute(...args: unknown[]): Promise<FakeToolResult> }
@@ -33,6 +43,8 @@ interface Harness {
 	commands: Map<string, (args: string | undefined, ctx: FakeContext) => unknown>;
 	tools: Map<string, FakeTool>;
 	entries: FakeEntry[];
+	branch: FakeEntry[];
+	activeToolWrites: string[][];
 	requests: FakeRequest[];
 	runtimeDefinition?: Record<string, unknown>;
 	activeTools(): string[];
@@ -44,6 +56,8 @@ interface Harness {
 	setControlReply(reply: RpcReply): void;
 	setSpawnReply(reply: RpcReply | "transport-error"): void;
 	setOwner(owner: string): void;
+	setActiveTools(names: string[]): void;
+	registerDynamicTool(name: string): void;
 	emitProcessTerminal(runId: string): void;
 }
 
@@ -56,6 +70,9 @@ function makeHarness(): Harness {
 	const listeners = new Map<string, EventHandler[]>();
 	const requests: FakeRequest[] = [];
 	const entries: FakeEntry[] = [];
+	const branch: FakeEntry[] = [];
+	const activeToolWrites: string[][] = [];
+	const dynamicTools = new Set<string>();
 	const handlers = new Map<string, ExtensionHandler[]>();
 	const commands = new Map<string, (args: string | undefined, ctx: FakeContext) => unknown>();
 	const tools = new Map<string, FakeTool>();
@@ -101,7 +118,7 @@ function makeHarness(): Harness {
 		mode: "tui",
 		scopedModels: [],
 		modelRegistry: { getAvailable: () => models },
-		sessionManager: { getSessionId: () => owner, getEntries: () => entries },
+		sessionManager: { getSessionId: () => owner, getEntries: () => entries, getBranch: () => branch },
 		ui: {
 			select: async (_title, options) => options.find((option) => option.startsWith("Quality —")),
 			notify: () => undefined,
@@ -119,8 +136,8 @@ function makeHarness(): Harness {
 		registerFlag() {},
 		getFlag() { return undefined; },
 		getActiveTools() { return [...active]; },
-		setActiveTools(names: string[]) { active = [...names]; },
-		getAllTools() { return [...new Set([...registeredTools, ...tools.keys()])].map((name) => ({ name })); },
+		setActiveTools(names: string[]) { active = [...names]; activeToolWrites.push([...names]); },
+		getAllTools() { return [...new Set([...registeredTools, ...dynamicTools, ...tools.keys()])].map((name) => ({ name })); },
 		appendEntry(customType: string, data: Record<string, unknown>) { entries.push({ type: "custom", customType, data }); },
 		on(name: string, handler: ExtensionHandler) {
 			handlers.set(name, [...(handlers.get(name) ?? []), handler]);
@@ -134,6 +151,8 @@ function makeHarness(): Harness {
 		commands,
 		tools,
 		entries,
+		branch,
+		activeToolWrites,
 		requests,
 		get runtimeDefinition() { return runtimeDefinition; },
 		activeTools: () => active,
@@ -145,6 +164,8 @@ function makeHarness(): Harness {
 		setControlReply: (reply) => { controlReply = reply; },
 		setSpawnReply: (reply) => { spawnReply = reply; },
 		setOwner: (next) => { owner = next; },
+		setActiveTools: (names) => { active = [...names]; },
+		registerDynamicTool: (name) => { dynamicTools.add(name); },
 		emitProcessTerminal: (runId) => listeners.get("subagent:process-terminal")?.forEach((handler) => handler({ runId })),
 	};
 }
@@ -198,6 +219,7 @@ describe("conductor-mode", () => {
 			allowNestedSubagents: false,
 			defaultAcceptance: { level: "none", reason: "Director verifies evidence" },
 		});
+		expect(h.runtimeDefinition?.systemPrompt).toContain("Use the launch checkout by default unless the task brief specifies another checkout or worktree.");
 		expect(h.runtimeDefinition?.systemPrompt).toContain("Unless the task brief explicitly directs otherwise, do not commit, push, create or switch branches");
 	});
 
@@ -213,11 +235,9 @@ describe("conductor-mode", () => {
 		(h.pi.setActiveTools as (names: string[]) => void)([...h.activeTools(), "subagent_supervisor"]);
 		const event = { systemPromptOptions: { sections: {} as Record<string, string> } };
 		await h.handlers.get("before_agent_start")?.[0]?.(event, h.ctx);
-		expect(h.activeTools()).toContain("subagent_supervisor");
-		expect(h.activeTools()).toContain("conductor_worker");
+		expect(h.activeTools()).toEqual([...baseTools, "conductor_worker", "subagent_supervisor"]);
 		await h.commands.get("conductor")?.(undefined, h.ctx);
-		expect(h.activeTools()).toContain("subagent_supervisor");
-		expect(h.activeTools()).not.toContain("conductor_worker");
+		expect(h.activeTools()).toEqual([...baseTools, "subagent_supervisor"]);
 	});
 
 	test("refuses Conductor activation while same-session plan mode or execution is persisted", async () => {
@@ -231,6 +251,15 @@ describe("conductor-mode", () => {
 			expect(h.activeTools()).toEqual(h.originalTools);
 			expect(h.entries.filter((entry) => entry.customType === "conductor-mode")).toHaveLength(0);
 		}
+	});
+
+	test("removes a stale wrapper on inactive startup without changing other tools", async () => {
+		const h = makeHarness();
+		h.setActiveTools([...baseTools, "conductor_worker"]);
+		const extension = (await import("../extensions/conductor-mode/index.ts")).default;
+		extension(h.pi as never);
+		await h.handlers.get("session_start")?.[0]?.({}, h.ctx);
+		expect(h.activeTools()).toEqual(baseTools);
 	});
 
 	test("does not append conductor entries in unused sessions", async () => {
@@ -493,6 +522,142 @@ describe("conductor-mode", () => {
 		expect(h.requests.filter((item) => item.method === "status")).toHaveLength(statusCount);
 	});
 
+	test("repairs missing legacy tools but honors later durable additions", async () => {
+		const h = makeHarness();
+		h.setActiveTools(["read", "grep", "find", "ls", "subagent_supervisor"]);
+		h.branch.push({ type: "custom", customType: "conductor-mode", data: { enabled: true, owner: "owner-1", original: [...baseTools, "subagent_supervisor"] } });
+		h.branch.push({ type: "message", message: { role: "system", sections: { "conductor-director": "All other tool calls are blocked, including indirect and nested calls." }, toolsRemoved: [{ name: "edit" }] } });
+		h.branch.push({ type: "message", message: { role: "system", sections: { "conductor-director": null }, toolsAdded: [{ name: "edit" }] } });
+		h.entries.push({ type: "custom", customType: "conductor-mode", data: { enabled: false, owner: "owner-1" } });
+		const extension = (await import("../extensions/conductor-mode/index.ts")).default;
+		extension(h.pi as never);
+		await h.handlers.get("session_start")?.[0]?.({}, h.ctx);
+		expect(h.activeTools()).not.toContain("edit");
+		h.setActiveTools(["read", "grep", "find", "ls", "subagent_supervisor"]);
+		h.branch.push({ type: "message", message: { role: "system", toolsRemoved: [{ name: "edit" }] } });
+		await h.handlers.get("session_tree")?.[0]?.({}, h.ctx);
+		expect(h.activeTools()).not.toContain("edit");
+	});
+
+	test("recovers tools missing from the first legacy prompt without toolsRemoved", async () => {
+		const h = makeHarness();
+		h.setActiveTools(["read", "grep", "find", "ls", "subagent_supervisor"]);
+		h.branch.push({ type: "custom", customType: "conductor-mode", data: { enabled: true, owner: "owner-1", original: [...baseTools, "subagent_supervisor"] } });
+		h.branch.push({ type: "message", message: { role: "system", sections: { "conductor-director": "All other tool calls are blocked, including indirect and nested calls." }, toolsAdded: ["read", "grep", "find", "ls", "subagent_supervisor"].map((name) => ({ name })) } });
+		const extension = (await import("../extensions/conductor-mode/index.ts")).default;
+		extension(h.pi as never);
+		await h.handlers.get("session_start")?.[0]?.({}, h.ctx);
+		expect(h.activeTools()).toContain("edit");
+		expect(h.activeTools()).toContain("bash");
+	});
+
+	test("does not guess a transcript loadout when the cold branch has no system message", async () => {
+		const h = makeHarness();
+		h.setActiveTools(["read", "grep", "find", "ls", "subagent_supervisor"]);
+		h.branch.push({ type: "custom", customType: "conductor-mode", data: { enabled: true, owner: "owner-1", original: [...baseTools, "subagent_supervisor"] } });
+		const extension = (await import("../extensions/conductor-mode/index.ts")).default;
+		extension(h.pi as never);
+		await h.handlers.get("session_start")?.[0]?.({}, h.ctx);
+		expect(h.activeTools()).not.toContain("edit");
+	});
+
+	test("recomputes recovery for consecutive legacy activations without system deltas", async () => {
+		for (const [firstIncludesEdit, secondIncludesEdit] of [[false, true], [true, false]]) {
+			const h = makeHarness();
+			const firstSnapshot = firstIncludesEdit ? baseTools : baseTools.filter((name) => name !== "edit");
+			h.branch.push({ type: "custom", customType: "conductor-mode", data: { enabled: true, owner: "owner-1", original: firstSnapshot } });
+			h.branch.push({ type: "message", message: { role: "system", sections: { "conductor-director": "All other tool calls are blocked, including indirect and nested calls." }, toolsRemoved: [{ name: "edit" }] } });
+			h.branch.push({ type: "message", message: { role: "assistant", content: [] } });
+			h.branch.push({ type: "custom", customType: "conductor-mode", data: { enabled: true, owner: "owner-1", original: secondIncludesEdit ? baseTools : baseTools.filter((name) => name !== "edit") } });
+			h.branch.push({ type: "message", message: { role: "assistant", content: [] } });
+			h.entries.push({ type: "custom", customType: "conductor-mode", data: { enabled: false, owner: "owner-1" } });
+			h.setActiveTools(["read", "grep", "find", "ls", "subagent_supervisor"]);
+			const extension = (await import("../extensions/conductor-mode/index.ts")).default;
+			extension(h.pi as never);
+			await h.handlers.get("session_start")?.[0]?.({}, h.ctx);
+			expect(h.activeTools().includes("edit")).toBe(secondIncludesEdit);
+		}
+	});
+
+	test("preserves recovery across a current-version off entry without an original snapshot", async () => {
+		const h = makeHarness();
+		h.setActiveTools(["read", "grep", "find", "ls", "subagent_supervisor"]);
+		h.branch.push({ type: "custom", customType: "conductor-mode", data: { enabled: true, owner: "owner-1", original: [...baseTools, "subagent_supervisor"] } });
+		h.branch.push({ type: "message", message: { role: "system", sections: { "conductor-director": "All other tool calls are blocked, including indirect and nested calls." }, toolsRemoved: [{ name: "edit" }] } });
+		h.branch.push({ type: "custom", customType: "conductor-mode", data: { enabled: false, owner: "owner-1" } });
+		h.branch.push({ type: "message", message: { role: "assistant", content: [] } });
+		const extension = (await import("../extensions/conductor-mode/index.ts")).default;
+		extension(h.pi as never);
+		await h.handlers.get("session_start")?.[0]?.({}, h.ctx);
+		expect(h.activeTools()).toContain("edit");
+	});
+
+	test("uses the selected tree branch's own legacy activation snapshot", async () => {
+		const h = makeHarness();
+		const firstSnapshot = baseTools.filter((name) => name !== "edit");
+		h.branch.push({ type: "custom", customType: "conductor-mode", data: { enabled: true, owner: "owner-1", original: firstSnapshot } });
+		h.branch.push({ type: "message", message: { role: "system", sections: { "conductor-director": "All other tool calls are blocked, including indirect and nested calls." }, toolsRemoved: [{ name: "edit" }] } });
+		h.branch.push({ type: "custom", customType: "conductor-mode", data: { enabled: true, owner: "owner-1", original: baseTools } });
+		h.branch.push({ type: "message", message: { role: "system", sections: { "conductor-director": "All other tool calls are blocked, including indirect and nested calls." }, toolsRemoved: [{ name: "write" }] } });
+		h.setActiveTools(["read", "grep", "find", "ls", "subagent_supervisor"]);
+		const extension = (await import("../extensions/conductor-mode/index.ts")).default;
+		extension(h.pi as never);
+		await h.handlers.get("session_start")?.[0]?.({}, h.ctx);
+		expect(h.activeTools()).toContain("edit");
+		expect(h.activeTools()).toContain("write");
+	});
+
+	test("revisits restricted branches and retries missing deferred tools after registration", async () => {
+		const h = makeHarness();
+		h.branch.push({ type: "custom", customType: "conductor-mode", data: { enabled: true, owner: "owner-1", original: [...baseTools, "late_mcp"] } });
+		h.entries.push({ type: "custom", customType: "conductor-mode", data: { enabled: false, owner: "owner-1" } });
+		h.setActiveTools(["read", "bash", "write", "codemode", "tool_search"]);
+		h.branch.push({ type: "message", message: { role: "system", toolsAdded: [...baseTools].map((name) => ({ name })) } });
+		h.branch.push({ type: "message", message: { role: "system", sections: { "conductor-director": "All other tool calls are blocked, including indirect and nested calls." }, toolsRemoved: [{ name: "edit" }, { name: "late_mcp" }] } });
+		h.branch.push({ type: "message", message: { role: "system", sections: { "conductor-director": null }, toolsRemoved: [{ name: "edit" }] } });
+		const extension = (await import("../extensions/conductor-mode/index.ts")).default;
+		extension(h.pi as never);
+		await h.handlers.get("session_start")?.[0]?.({}, h.ctx);
+		expect(h.activeTools()).not.toContain("edit");
+		h.setActiveTools(["read", "grep", "find", "ls", "subagent_supervisor"]);
+		h.registerDynamicTool("late_mcp");
+		await h.handlers.get("before_agent_start")?.[0]?.({ systemPromptOptions: { sections: {} } }, h.ctx);
+		expect(h.activeTools()).toContain("late_mcp");
+		await h.handlers.get("session_tree")?.[0]?.({}, h.ctx);
+		expect(h.activeTools()).toContain("late_mcp");
+	});
+
+	test("Plan mode defers legacy recovery on startup and turns", async () => {
+		const h = makeHarness();
+		h.setActiveTools(["read", "grep", "find", "ls", "subagent_supervisor"]);
+		h.branch.push({ type: "custom", customType: "conductor-mode", data: { enabled: true, owner: "owner-1", original: [...baseTools, "subagent_supervisor"] } });
+		h.branch.push({ type: "message", message: { role: "system", sections: { "conductor-director": "All other tool calls are blocked, including indirect and nested calls." }, toolsRemoved: [{ name: "edit" }, { name: "write" }] } });
+		h.entries.push(
+			{ type: "custom", customType: "plan-mode", data: { enabled: true } },
+			{ type: "custom", customType: "conductor-mode", data: { enabled: false, owner: "owner-1" } },
+		);
+		const extension = (await import("../extensions/conductor-mode/index.ts")).default;
+		extension(h.pi as never);
+		await h.handlers.get("session_start")?.[0]?.({}, h.ctx);
+		await h.handlers.get("before_agent_start")?.[0]?.({ systemPromptOptions: { sections: {} } }, h.ctx);
+		expect(h.activeTools()).not.toContain("edit");
+		expect(h.activeTools()).not.toContain("write");
+		h.entries.push({ type: "custom", customType: "plan-mode", data: { enabled: false } });
+		await h.handlers.get("before_agent_start")?.[0]?.({ systemPromptOptions: { sections: {} } }, h.ctx);
+		expect(h.activeTools()).toContain("edit");
+	});
+
+	test("keeps the incoming enabled wrapper active without transient removal", async () => {
+		const h = makeHarness();
+		h.entries.push({ type: "custom", customType: "conductor-mode", data: { enabled: true, owner: "owner-1" } });
+		h.setActiveTools([...baseTools, "conductor_worker"]);
+		const extension = (await import("../extensions/conductor-mode/index.ts")).default;
+		extension(h.pi as never);
+		await h.handlers.get("session_start")?.[0]?.({}, h.ctx);
+		expect(h.activeTools()).toContain("conductor_worker");
+		expect(h.activeToolWrites.every((tools) => tools.includes("conductor_worker"))).toBe(true);
+	});
+
 	test("restores unresolved ownership without disabling Conductor or auto-dispatching", async () => {
 		const h = makeHarness();
 		h.entries.push({
@@ -515,6 +680,7 @@ describe("conductor-mode", () => {
 		await h.handlers.get("session_start")?.[0]?.({}, h.ctx);
 		expect(h.activeTools()).toContain("conductor_worker");
 		expect(h.activeTools()).toContain("edit");
+		expect(h.entries.at(-1)?.data).not.toHaveProperty("original");
 		expect(h.requests.some((item) => item.method === "spawn")).toBe(false);
 		expect((await execute(h, { action: "status" })).content[0]?.text).toContain("remains unresolved");
 	});
@@ -542,6 +708,7 @@ describe("conductor-mode", () => {
 		expect(h.requests.some((item) => item.method === "spawn")).toBe(false);
 		h.setOwner("fork-session");
 		await h.handlers.get("session_start")?.[0]?.({}, h.ctx);
+		expect(h.activeTools()).toEqual(h.originalTools);
 		expect((await execute(h, { action: "status" })).content[0]?.text).toContain("No active or retained worker");
 		expect(h.requests.some((item) => item.method === "spawn")).toBe(false);
 	});
@@ -564,6 +731,20 @@ describe("conductor-mode", () => {
 		h.emitProcessTerminal("run-1");
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(h.entries.at(-1)?.data?.run).toBeUndefined();
+	});
+
+	test("restoring and toggling does not mutate the loaded owner-matched entry", async () => {
+		const h = makeHarness();
+		const historical = { enabled: true, owner: "owner-1", run: { operation: "spawn", status: "complete", lifecycleState: "terminal" } };
+		h.entries.push({ type: "custom", customType: "conductor-mode", data: historical });
+		h.entries.push({ type: "custom", customType: "conductor-mode", data: { enabled: false, owner: "other-owner" } });
+		const extension = (await import("../extensions/conductor-mode/index.ts")).default;
+		extension(h.pi as never);
+		await h.handlers.get("session_start")?.[0]?.({}, h.ctx);
+		expect(h.activeTools()).toContain("conductor_worker");
+		await h.commands.get("conductor")?.(undefined, h.ctx);
+		expect(historical.enabled).toBe(true);
+		expect(historical.run.lifecycleState).toBe("terminal");
 	});
 
 	test("blocks only nested coordination calls", async () => {
@@ -595,6 +776,7 @@ describe("conductor-mode", () => {
 		const h = await setup();
 		const invoke = h.handlers.get("tool_call")?.[0];
 		expect(await invoke?.({ toolName: "bash", parentToolCallId: "outer/1" }, h.ctx)).toBeUndefined();
+		expect(await invoke?.({ toolName: "conductor_worker" }, h.ctx)).toBeUndefined();
 		expect(await invoke?.({ toolName: "codemode" }, h.ctx)).toBeUndefined();
 		expect(await invoke?.({ toolName: "tool_search" }, h.ctx)).toBeUndefined();
 		expect(await invoke?.({ toolName: "conductor_worker", parentToolCallId: "outer/1" }, h.ctx)).toMatchObject({ block: true });

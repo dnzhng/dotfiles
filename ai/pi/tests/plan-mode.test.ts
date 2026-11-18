@@ -2,6 +2,7 @@ import { afterAll, describe, expect, mock, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { getBus } from "../extensions/side-panel/bus.ts";
 
 interface FakeModel {
 	provider: string;
@@ -64,6 +65,7 @@ interface Harness {
 	activeTools: string[];
 	setModelResult: boolean;
 	thinkingLevel: string;
+	setPlanFlag: (enabled: boolean) => void;
 }
 
 async function loadExtension(): Promise<Harness> {
@@ -73,6 +75,8 @@ async function loadExtension(): Promise<Harness> {
 	const sentMessages: Harness["sentMessages"] = [];
 	const sentUserMessages: Harness["sentUserMessages"] = [];
 	const events: string[] = [];
+	const flags = new Set<string>();
+	let planFlag = false;
 	const harness: Harness = {
 		commands,
 		handlers,
@@ -83,11 +87,12 @@ async function loadExtension(): Promise<Harness> {
 		activeTools: ["read", "bash", "edit", "write"],
 		setModelResult: true,
 		thinkingLevel: "medium",
+		setPlanFlag: (enabled) => { planFlag = enabled; },
 	};
 
 	const pi = {
 		registerTool: () => {},
-		registerFlag: () => {},
+		registerFlag: (name: string) => { flags.add(name); },
 		registerShortcut: () => {},
 		registerCommand: (name: string, def: { handler: Harness["commands"] extends Map<string, infer H> ? H : never }) => {
 			commands.set(name, def.handler);
@@ -96,7 +101,7 @@ async function loadExtension(): Promise<Harness> {
 			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
 			return () => {};
 		},
-		getFlag: () => false,
+		getFlag: (name: string) => flags.has(name) ? planFlag : undefined,
 		getAllTools: () => ["subagent", "subagent_supervisor"].map((name) => ({ name })),
 		getActiveTools: () => [...harness.activeTools],
 		setActiveTools: (names: string[]) => {
@@ -168,7 +173,7 @@ function makeCtx(options: CtxOptions = {}) {
 		mode: "tui",
 		hasUI: true,
 		cwd: plansRoot,
-		sessionManager: { getEntries: () => options.entries ?? [], getSessionFile: () => "/tmp/session.jsonl" },
+		sessionManager: { getEntries: () => options.entries ?? [], getSessionFile: () => "/tmp/session.jsonl", getSessionId: () => "test-session" },
 		modelRegistry: {
 			find: (provider: string, id: string) => models.find((m) => m.provider === provider && m.id === id),
 			getAvailable: () => options.availableModels ?? models,
@@ -241,6 +246,44 @@ afterAll(() => {
 });
 
 describe("execution target persistence", () => {
+	test("--plan startup persists initial state for same-session mode interlocks", async () => {
+		const h = await loadExtension();
+		h.setPlanFlag(true);
+		const ctx = makeCtx();
+		await runSessionStart(h, ctx, "new");
+		expect(lastEntry(h).enabled).toBe(true);
+		expect(h.activeTools).not.toContain("edit");
+	});
+
+	test("Conductor startup wins over same-session --plan before model or tool changes", async () => {
+		const h = await loadExtension();
+		const ctx = makeCtx({ entries: [
+			{ type: "custom", customType: "conductor-mode", data: { enabled: true, owner: "test-session" } },
+			{ type: "custom", customType: "plan-mode", data: { enabled: true, executing: true } },
+		] });
+		await runSessionStart(h, ctx, "resume");
+		expect(h.events).toEqual([]);
+		expect(h.activeTools).toEqual(["read", "bash", "edit", "write"]);
+		expect(ctx.notifications.some((notification) => notification.message.includes("Conductor owns"))).toBe(true);
+	});
+
+	test("ignores Conductor state owned by a different session", async () => {
+		const h = await loadExtension();
+		const ctx = makeCtx({ entries: [{ type: "custom", customType: "conductor-mode", data: { enabled: true, owner: "other-session" } }] });
+		await enterPlanMode(h, ctx);
+		expect(h.activeTools).not.toContain("edit");
+		expect(ctx.notifications.some((notification) => notification.message.includes("Plan mode enabled"))).toBe(true);
+	});
+
+	test("refuses plan mode when the same session has active Conductor ownership", async () => {
+		const h = await loadExtension();
+		const ctx = makeCtx({ entries: [{ type: "custom", customType: "conductor-mode", data: { enabled: true, owner: "test-session" } }] });
+		await enterPlanMode(h, ctx);
+		expect(h.events).toEqual([]);
+		expect(ctx.sessionManager.getEntries()).toHaveLength(1);
+		expect(ctx.notifications.some((notification) => notification.message.includes("Conductor is active"))).toBe(true);
+	});
+
 	test("offers delegated execution first and an explicit inline action", async () => {
 		const h = await loadExtension();
 		const ctx = makeCtx({ selects: [STAY_ACTION] });
@@ -595,6 +638,15 @@ describe("unusable targets", () => {
 });
 
 describe("fresh-session execution", () => {
+	test("refuses fresh execution while Conductor owns the session", async () => {
+		const h = await loadExtension();
+		const ctx = makeCtx({ entries: [{ type: "custom", customType: "conductor-mode", data: { enabled: true, owner: "test-session" } }] });
+		await runSessionStart(h, ctx, "resume");
+		const handler = h.commands.get("plan-exec-fresh");
+		if (!handler) throw new Error("/plan-exec-fresh command not registered");
+		await handler(undefined, ctx);
+		expect(ctx.notifications.some((notification) => notification.message.includes("Fresh plan execution is unavailable"))).toBe(true);
+	});
 	async function runFreshExecute(h: Harness, ctx: Ctx) {
 		const handler = h.commands.get("plan-exec-fresh");
 		if (!handler) throw new Error("/plan-exec-fresh command not registered");
@@ -902,6 +954,22 @@ describe("model picker ordering", () => {
 });
 
 describe("progress tracking", () => {
+	test("publishes verified parent progress without counting a native child notice", async () => {
+		const h = await loadExtension();
+		const ctx = makeCtx({ entries: executionEntries([
+			{ step: 1, text: "First step", completed: false },
+			{ step: 2, text: "Second step", completed: false },
+		]) });
+		await runSessionStart(h, ctx, "resume");
+		await h.handlers.get("turn_end")?.[0]?.({
+			message: { role: "custom", customType: "subagent-notify", content: [{ type: "text", text: "[DONE:1]" }] },
+		}, ctx);
+		expect(getBus().todos?.items.map((item) => item.completed)).toEqual([false, false]);
+		await runTurnEnd(h, ctx, [{ type: "text", text: "Verified the first step.\n[DONE:1]  " }]);
+		expect(getBus().todos?.items.map((item) => item.completed)).toEqual([true, false]);
+		expect(lastEntry(h).todos).toEqual(getBus().todos?.items);
+	});
+
 	test("recognizes completion markers in thinking blocks", async () => {
 		const h = await loadExtension();
 		const ctx = makeCtx({
@@ -934,7 +1002,7 @@ describe("progress tracking", () => {
 		});
 		await runSessionStart(h, ctx, "resume");
 
-		await runTurnEnd(h, ctx, [{ type: "text", text: "[DONE 1] Done: 2. Step 3 is complete." }]);
+		await runTurnEnd(h, ctx, [{ type: "text", text: "[DONE 1]  \nDone: 2  \nStep 3 is complete.  " }]);
 
 		expect(lastEntry(h).todos).toEqual([
 			{ step: 1, text: "First step", completed: true },

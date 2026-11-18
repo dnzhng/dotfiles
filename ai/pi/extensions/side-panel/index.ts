@@ -406,14 +406,15 @@ function menuLines(theme: Theme, title: string, options: string[], selected: num
 	return lines;
 }
 
-function todoLines(theme: Theme, items: Array<{ text: string; completed: boolean }>): string[] {
-	const lines = [theme.fg("accent", "Plan")];
-	for (const item of items) {
-		lines.push(
-			item.completed
-				? theme.fg("success", "☑ ") + theme.fg("muted", theme.strikethrough(item.text))
-				: `${theme.fg("muted", "☐ ")}${item.text}`,
-		);
+function todoLines(theme: Theme, items: Array<{ text: string; completed: boolean }>, width: number, selected = -1, focused = false): string[] {
+	const lines = [theme.fg("accent", focused ? "Plan · ↑↓ · Enter" : "Plan")];
+	const rows = Math.max(1, Math.min(items.length, 8, (process.stdout.rows || 40) - 12));
+	const start = Math.max(0, Math.min(selected - rows + 1, items.length - rows));
+	for (let i = start; i < start + rows; i++) {
+		const item = items[i];
+		const glyph = item.completed ? theme.fg("success", "✓ ") : theme.fg("muted", "○ ");
+		const text = item.completed ? theme.fg("muted", theme.strikethrough(item.text)) : item.text;
+		lines.push(truncateToWidth((focused && i === selected ? theme.fg("accent", "> ") : "  ") + glyph + text, width));
 	}
 	return lines;
 }
@@ -486,7 +487,8 @@ export default function sidePanelExtension(pi: ExtensionAPI): void {
 	let menuIndex = 0;
 	let lastMenu: unknown;
 	let agentIndex = 0;
-	let inspecting = false;
+	let planIndex = 0;
+	let focusedSection: "agents" | "plan" | undefined;
 	let overlayOpen = false;
 	let lastPanelJson = "";
 	let lastCompactAgentLines = "";
@@ -532,13 +534,17 @@ export default function sidePanelExtension(pi: ExtensionAPI): void {
 			lastMenu = undefined;
 			menuIndex = 0;
 		}
-		if (bus.todos && bus.todos.items.length > 0) {
-			sections.push(todoLines(theme, bus.todos.items));
+		const todos = bus.todos?.items ?? [];
+		planIndex = Math.max(0, Math.min(planIndex, todos.length - 1));
+		if (focusedSection === "plan" && !todos.length) focusedSection = undefined;
+		if (focusedSection === "agents" && !agentRows.length) focusedSection = undefined;
+		if (todos.length > 0) {
+			sections.push(todoLines(theme, todos, Math.max(1, width - 1 - LEFT_PAD), planIndex, focusedSection === "plan"));
 		}
 		if (agentRows.length > 0) {
 			const count = entryCount(agentRows);
 			if (agentIndex >= count) agentIndex = count - 1;
-			sections.push(agentLines(theme, agentRows, Date.now(), agentIndex, inspecting));
+			sections.push(agentLines(theme, agentRows, Date.now(), agentIndex, focusedSection === "agents"));
 		}
 		if (sections.length === 0) return null;
 		const lines = sections.flatMap((s, i) => (i === 0 ? s : ["", ...s]));
@@ -753,6 +759,39 @@ export default function sidePanelExtension(pi: ExtensionAPI): void {
 		}
 	}
 
+	async function openPlanDetail(text: string): Promise<void> {
+		if (!ui || overlayOpen) return;
+		overlayOpen = true;
+		try {
+			await ui.ui.custom((overlayTui, theme, _kb, done) => {
+				let offset = 0;
+				let height = 1;
+				const render = (width: number): string[] => {
+					const rows = text.split("\n").flatMap((line) => wrapTextWithAnsi(line, width));
+					height = Math.max(1, Math.floor((process.stdout.rows || 40) * 0.8) - 2);
+					offset = Math.min(offset, Math.max(0, rows.length - height));
+					return [theme.fg("accent", "Plan step"), ...rows.slice(offset, offset + height),
+						theme.fg("dim", "↑↓/jk scroll · pgup/pgdn · esc close")].map((line) => truncateToWidth(line, width));
+				};
+				const scroll = (delta: number) => {
+					offset = Math.max(0, offset + delta);
+					overlayTui.requestRender();
+				};
+				return {
+					render,
+					handleInput: (data: string) => {
+						if (matchesKey(data, "escape") || matchesKey(data, "left")) done(undefined);
+						else if (matchesKey(data, "up") || matchesKey(data, "k")) scroll(-1);
+						else if (matchesKey(data, "down") || matchesKey(data, "j")) scroll(1);
+						else if (matchesKey(data, "pageUp")) scroll(-height);
+						else if (matchesKey(data, "pageDown")) scroll(height);
+					},
+					invalidate: () => {},
+				};
+			}, { overlay: true, overlayOptions: { width: Math.min(110, (process.stdout.columns || 80) - 4), maxHeight: "80%" } });
+		} finally { overlayOpen = false; }
+	}
+
 	function handleTerminalInput(data: string): { consume?: boolean } | undefined {
 		if (isKeyRelease(data) || overlayOpen) return undefined;
 		const bus = getBus();
@@ -782,45 +821,43 @@ export default function sidePanelExtension(pi: ExtensionAPI): void {
 			return undefined;
 		}
 
-		// Inspect mode for the Agents section.
-		if (!bus.capable || agentRows.length === 0) {
-			if (inspecting) {
-				inspecting = false;
+		const items = bus.todos?.items ?? [];
+		if (!bus.capable || !editorIsEmpty()) {
+			if (focusedSection) {
+				focusedSection = undefined;
 				rebuildPanel();
 			}
 			return undefined;
 		}
-		if (!inspecting) {
-			if (!matchesKey(data, "right") || !editorIsEmpty()) return undefined;
-			inspecting = true;
-			agentIndex = 0;
-			rebuildPanel();
+		if (!focusedSection) {
+			if (!matchesKey(data, "right") || (!items.length && !agentRows.length)) return undefined;
+			focusedSection = agentRows.length ? "agents" : "plan";
+			if (focusedSection === "agents") agentIndex = 0;
+		} else if (matchesKey(data, "tab") && items.length && agentRows.length) {
+			focusedSection = focusedSection === "plan" ? "agents" : "plan";
+		} else if (matchesKey(data, Key.enter)) {
+			if (focusedSection === "plan") {
+				const item = items[planIndex];
+				if (item) void openPlanDetail(item.detail ?? item.text);
+			} else {
+				const entry = agentRows.flatMap(entriesOf)[agentIndex];
+				if (entry) void openDetail(entry);
+			}
 			return { consume: true };
+		} else {
+			const direction = matchesKey(data, "down") || matchesKey(data, "j") ? 1
+				: matchesKey(data, "up") || matchesKey(data, "k") ? -1 : 0;
+			if (direction) {
+				if (focusedSection === "plan") planIndex = Math.max(0, Math.min(items.length - 1, planIndex + direction));
+				else agentIndex = Math.max(0, Math.min(entryCount(agentRows) - 1, agentIndex + direction));
+			} else {
+				focusedSection = undefined;
+				rebuildPanel();
+				return matchesKey(data, "escape") || matchesKey(data, "left") ? { consume: true } : undefined;
+			}
 		}
-		if (matchesKey(data, "down") || matchesKey(data, "j")) {
-			agentIndex = Math.min(entryCount(agentRows) - 1, agentIndex + 1);
-			rebuildPanel();
-			return { consume: true };
-		}
-		if (matchesKey(data, "up") || matchesKey(data, "k")) {
-			agentIndex = Math.max(0, agentIndex - 1);
-			rebuildPanel();
-			return { consume: true };
-		}
-		if (matchesKey(data, "escape") || matchesKey(data, "left")) {
-			inspecting = false;
-			rebuildPanel();
-			return { consume: true };
-		}
-		if (matchesKey(data, Key.enter)) {
-			const entry = agentRows.flatMap(entriesOf)[agentIndex];
-			if (entry) void openDetail(entry);
-			return { consume: true };
-		}
-		// Any other key deactivates and passes through.
-		inspecting = false;
 		rebuildPanel();
-		return undefined;
+		return { consume: true };
 	}
 
 	function dispose(): void {

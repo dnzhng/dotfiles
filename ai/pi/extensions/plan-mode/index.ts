@@ -741,7 +741,24 @@ After each step passes its verify check, include a [DONE:n] tag.
 Do not commit anything unless the user explicitly asks.`;
 	}
 
+	function conductorBlocksPlan(ctx: ExtensionContext): boolean {
+		const sessionId = ctx.sessionManager.getSessionId();
+		const entries = ctx.sessionManager.getEntries() as {
+			type: string;
+			customType?: string;
+			data?: { owner?: string; enabled?: boolean; run?: unknown };
+		}[];
+		const entry = entries
+			.filter((item) => item.type === "custom" && item.customType === "conductor-mode" && item.data?.owner === sessionId)
+			.at(-1);
+		return !!entry?.data && (entry.data.enabled === true || entry.data.run !== undefined);
+	}
+
 	async function togglePlanMode(ctx: ExtensionContext): Promise<void> {
+		if (conductorBlocksPlan(ctx)) {
+			ctx.ui.notify("Plan mode cannot start or toggle while Conductor is active or owns an unresolved worker.", "warning");
+			return;
+		}
 		planModeEnabled = !planModeEnabled;
 		executionMode = false;
 		todoItems = [];
@@ -781,6 +798,10 @@ Do not commit anything unless the user explicitly asks.`;
 	pi.registerCommand("plan-exec-fresh", {
 		description: "Execute the current plan in a fresh session (clears context)",
 		handler: async (_args, ctx) => {
+			if (conductorBlocksPlan(ctx)) {
+				ctx.ui.notify("Fresh plan execution is unavailable while Conductor is active or owns an unresolved worker.", "warning");
+				return;
+			}
 			if (executionMode) {
 				ctx.ui.notify("Already executing the plan.", "info");
 				return;
@@ -1104,6 +1125,13 @@ ${executionInstructions(executionRoute)}${reviewLine ? `\n${reviewLine}` : ""}${
 			reviewConfig = planModeEntry.data.reviewConfig ?? reviewConfig;
 		}
 
+		if (conductorBlocksPlan(ctx) && (planModeEnabled || executionMode)) {
+			planModeEnabled = false;
+			executionMode = false;
+			ctx.ui.notify("Plan mode and plan execution were not restored because Conductor owns this session or an unresolved worker.", "warning");
+			persistState();
+		}
+
 		// On resume: re-scan messages to rebuild completion state
 		// Only scan messages AFTER the last "plan-mode-execute" to avoid picking up [DONE:n] from previous plans
 		const isResume = planModeEntry !== undefined;
@@ -1153,6 +1181,7 @@ ${executionInstructions(executionRoute)}${reviewLine ? `\n${reviewLine}` : ""}${
 			await applyExecutionConfig(ctx);
 		}
 		updateStatus(ctx);
+		if (planModeEnabled && pi.getFlag("plan") === true && !planModeEntry?.data) persistState();
 		await cleanupExpiredPlans(ctx);
 	});
 }

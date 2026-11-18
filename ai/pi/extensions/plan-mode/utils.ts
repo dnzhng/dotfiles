@@ -145,6 +145,7 @@ export function isSafeCommand(command: string): boolean {
 export interface TodoItem {
 	step: number;
 	text: string;
+	detail?: string;
 	completed: boolean;
 }
 
@@ -177,32 +178,47 @@ export function extractTodoItems(message: string): TodoItem[] {
 	// sections (## Verification, etc.) are not plan steps.
 	const sectionEnd = planSection.search(/^#{1,6}\s|^[ \t]*-{3,}[ \t]*$/m);
 	if (sectionEnd >= 0) planSection = planSection.slice(0, sectionEnd);
-	const numberedPattern = /^\s*(\d+)[.)]\s+(.+)$/gm;
-
-	for (const match of planSection.matchAll(numberedPattern)) {
+	const lines = planSection.split(/\r?\n/);
+	for (let index = 0; index < lines.length; index++) {
+		const match = lines[index].match(/^([ \t]*)\d+[.)][ \t]+(.+)$/);
+		if (!match) continue;
 		const text = match[2].trim();
-		if (text.length > 5 && !text.startsWith("/") && !text.startsWith("-")) {
-			const cleaned = cleanStepText(text);
-			if (cleaned.length > 3) {
-				items.push({ step: items.length + 1, text: cleaned, completed: false });
-			}
+		if (text.length <= 5 || text.startsWith("/") || text.startsWith("-")) continue;
+		const cleaned = cleanStepText(text);
+		if (cleaned.length <= 3) continue;
+		const body = [text];
+		for (let next = index + 1; next < lines.length; next++) {
+			const line = lines[next];
+			if (!line.trim()) continue;
+			if ((line.match(/^[ \t]*/)?.[0].length ?? 0) <= match[1].length) break;
+			body.push(line.trim());
+			index = next;
 		}
+		const item: TodoItem = { step: items.length + 1, text: cleaned, completed: false };
+		if (body.length > 1) item.detail = body.join("\n");
+		items.push(item);
 	}
 	return items;
 }
 
 export function extractDoneSteps(message: string): number[] {
 	const steps: number[] = [];
-	for (const match of message.matchAll(/\[DONE\s*:?\s*(\d+)\]/gi)) {
-		steps.push(Number(match[1]));
-	}
-	for (const match of message.matchAll(/(?<!\bnot\s+)\bDone\s*:\s*(\d+)\b/gi)) {
-		steps.push(Number(match[1]));
-	}
-	for (const match of message.matchAll(
-		/(?:^|[.!?]\s+)\s*(?:[-*]\s+)?Step\s*(\d+)\s+(?:is\s+)?(?:done|complete|completed|finished)(?=[.!](?:\s|$)|\s*$)/gim,
-	)) {
-		steps.push(Number(match[1]));
+	let fence: string | undefined;
+	for (const rawLine of message.split(/\r?\n/)) {
+		const delimiter = rawLine.match(/^[ \t]*(`{3,}|~{3,})(.*)$/);
+		if (fence) {
+			if (delimiter && !delimiter[2].trim() && delimiter[1].startsWith(fence)) fence = undefined;
+			continue;
+		}
+		if (delimiter) {
+			fence = delimiter[1];
+			continue;
+		}
+		const line = rawLine.trim();
+		let match = line.match(/^(?:[-*]\s+)?\[DONE\s*:?\s*(\d+)\]$/i);
+		if (!match) match = line.match(/^(?:[-*]\s+)?Done\s*:\s*(\d+)$/i);
+		if (!match) match = line.match(/^(?:[-*]\s+)?Step\s*(\d+)\s+(?:is\s+)?(?:done|complete|completed|finished)[.!]?$/i);
+		if (match) steps.push(Number(match[1]));
 	}
 	return [...new Set(steps)];
 }

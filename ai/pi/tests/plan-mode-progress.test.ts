@@ -24,6 +24,12 @@ describe("extractTodoItems", () => {
 		expect(items[0]?.text.endsWith("...")).toBe(false);
 	});
 
+	test("keeps indented verification with its step without splitting nested lists into steps", () => {
+		const items = extractTodoItems("## Plan\n1. Implement the parser change\n\n   Verify: run focused tests\n   1. Check the wake path\n2. Document the result\n## Verification\nRun the full suite");
+		expect(items.map((item) => item.text)).toEqual(["Implement the parser change", "Document the result"]);
+		expect(items[0]?.detail).toBe("Implement the parser change\nVerify: run focused tests\n1. Check the wake path");
+	});
+
 	test("cleans formatting that closes at the end of a step", () => {
 		const items = extractTodoItems(
 			["Plan:", "1. **Investigate the parser change**", "2. Verify the **parser behavior**"].join("\n"),
@@ -65,18 +71,21 @@ describe("extractTodoItems", () => {
 });
 
 describe("extractDoneSteps", () => {
-	test("recognizes bracket and plain-text marker variants", () => {
-		expect(extractDoneSteps("[DONE:1] [DONE: 2] [DONE 3] [Done:4] Done: 5")).toEqual([1, 2, 3, 4, 5]);
+	test("recognizes standalone marker lines and ignores inline-code examples", () => {
+		expect(extractDoneSteps("\n[DONE:1]  \n[DONE: 2]\n[DONE 3]\n[Done:4]\nDone: 5  \n")).toEqual([1, 2, 3, 4, 5]);
+		expect(extractDoneSteps("The literal marker `[DONE:1]` is an example.\nThis is prose [DONE:2].")).toEqual([]);
+		expect(extractDoneSteps("```text\n[DONE:1]\nDone: 2\n```\n[DONE:3]")).toEqual([3]);
+		expect(extractDoneSteps("````text\n```\n[DONE:1]\n~~~~\n[DONE:2]\n````\n[DONE:3]")).toEqual([3]);
 	});
 
 	test("recognizes affirmative Step variants", () => {
 		expect(
-			extractDoneSteps("Step 6 is complete. Step 7 done. Step 8 finished. Step 9 completed. Step 10 is done."),
+			extractDoneSteps("Step 6 is complete.\nStep 7 done.\nStep 8 finished.\nStep 9 completed.\nStep 10 is done."),
 		).toEqual([6, 7, 8, 9, 10]);
 	});
 
 	test("deduplicates repeated markers", () => {
-		expect(extractDoneSteps("[DONE:1] [DONE 1] [Done: 1] Done: 1 Step 1 is complete")).toEqual([1]);
+		expect(extractDoneSteps("[DONE:1]\n[DONE 1]\n[Done: 1]\nDone: 1\nStep 1 is complete.")).toEqual([1]);
 	});
 
 	test("ignores negative phrasing", () => {
@@ -105,7 +114,7 @@ describe("markCompletedSteps", () => {
 	test("marks each step once even when completion is reported repeatedly", () => {
 		const todos = makeTodos();
 
-		expect(markCompletedSteps("[DONE:1] [DONE 1] Done: 1 Step 1 is complete", todos)).toBe(1);
+		expect(markCompletedSteps("[DONE:1]\n[DONE 1]\nDone: 1\nStep 1 is complete.", todos)).toBe(1);
 		expect(todos[0]?.completed).toBe(true);
 		expect(markCompletedSteps("Step 1 is complete", todos)).toBe(0);
 	});

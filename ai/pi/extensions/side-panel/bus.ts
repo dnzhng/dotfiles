@@ -26,6 +26,7 @@
 export interface SidePanelTodoItem {
 	step: number;
 	text: string;
+	detail?: string;
 	completed: boolean;
 }
 

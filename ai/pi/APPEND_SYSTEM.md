@@ -7,6 +7,10 @@ recommended baseline and supports both text and images — handle image reading
 inline with the `read` tool like any other file. No image-routing subagent is
 needed.
 
+## Conductor mode
+
+While `/conductor` is active, ignore the optional workflow-subagent guidance below; Conductor blocks those tools. Use its Speed/Quality choice and never bypass its tool-call restrictions.
+
 ## Optional workflow subagents
 
 Three workflow subagents exist as context-hygiene helpers — delegating to them

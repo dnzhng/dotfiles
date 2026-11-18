@@ -168,6 +168,27 @@ tmux set -pu -t "$TMUX_PANE" pane-colours
 printf '\033]104\007\033]110\007\033]111\007\033]112\007'
 ```
 
+`extensions/conductor-mode/` — opt-in director mode (`/conductor`,
+`/conductor status`) that limits the parent to inspection and coordination and
+routes implementation through an explicitly selected Speed/Quality worker.
+`conductor_worker` actions include `models` (bounded, searchable available-model
+catalog), `start`, `status`, `steer`, `stop`, and `resume`. The parent keeps its
+model and thinking level. Cancel starts nothing. A worker that may have started
+after an uncertain RPC reply remains unresolved; use `/conductor status` or
+`conductor_worker({ action: "status" })` to reconcile exact native status. The
+slot is released only by matching terminal lifecycle and process-terminal proof
+(or matching terminal `not-started` proof); missing/unknown evidence and stop
+acknowledgments do not release it. If a spawn reply is ambiguous, or a retained
+run's resume reply is ambiguous, use `/conductor status` and the native Agents
+sidebar/stop controls to inspect the worker. The slot remains reserved; resuming
+the same locked session preserves that reservation. If recovery requires quitting
+and opening a fresh session, do so only after independently verifying that no old
+writer remains in the checkout. A stop acknowledgment alone is not proof that
+writing has stopped. A detached worker may continue after Pi quits; quitting is
+not a stop request. Reopening the same session retains unresolved ownership and
+blocks duplicate dispatch; a completed eligible run remains available for
+same-model follow-up resume.
+
 `extensions/plan-mode/` — read-only exploration mode, toggled with `/plan`,
 `Ctrl+Alt+P`, or the `--plan` startup flag. Enabling swaps the active tool set
 to read-only (`edit`/`write` removed, other active tools kept, restored on
@@ -187,8 +208,13 @@ require explicit opt-in to separate checkouts. The Agents sidebar shows worker
 milestones and their age; on narrow terminals it uses compact rows below the
 editor. Inline execution honors the configured execution target; a fresh session
 with no target starts on Pi’s default model.
+Plan rows in the sidebar stay compact. From an empty editor, press `→` to
+focus the sidebar, `Tab` to switch between Agents and Plan, `↑` / `↓` to
+select a step, and `Enter` to open its full text and verification. Scroll the
+overlay with arrows or Page Up / Page Down; `Esc` closes it.
 Progress (`📋 n/m` status + strikethrough widget, "Plan Complete" summary when
-all steps land) is tracked via `[DONE:n]` markers in assistant replies. State
+all steps land) is tracked via standalone `[DONE:n]` lines in parent assistant
+replies. Inline or fenced examples and child completion notices do not count. State
 (enabled/todos/executing/route/pre-plan model and thinking/tool set) persists
 via `appendEntry`, so resume restores a mid-execution plan, re-scanning only
 messages after the last execute marker for `[DONE:n]` tags. Each

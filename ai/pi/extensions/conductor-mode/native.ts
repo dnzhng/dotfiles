@@ -16,7 +16,6 @@ export interface RunRef {
 }
 export interface NativeState {
 	enabled: boolean;
-	original?: string[];
 	run?: RunRef;
 	retained?: RunRef;
 	owner?: string;
@@ -92,7 +91,7 @@ export function registerWorker(pi: ExtensionAPI): (() => void) | undefined {
 			systemPrompt: [
 				"Implement only the supplied self-contained task in the current checkout.",
 				"Follow the inherited project/global instructions.",
-				"Do not commit, push, create or switch branches, or create linked worktrees.",
+				"Unless the task brief explicitly directs otherwise, do not commit, push, create or switch branches, or create linked worktrees.",
 				"Do not delegate. Git status/diff inspection is allowed.",
 				"Report changed paths, exact check commands, and outcomes.",
 			].join(" "),

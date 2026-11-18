@@ -169,8 +169,8 @@ printf '\033]104\007\033]110\007\033]111\007\033]112\007'
 ```
 
 `extensions/conductor-mode/` — opt-in director mode (`/conductor`,
-`/conductor status`) that limits the parent to inspection and coordination and
-routes implementation through an explicitly selected Speed/Quality worker.
+`/conductor status`) that adds a single owned worker; the parent keeps its
+normal tools and delegates implementation by default through a Speed/Quality worker.
 `conductor_worker` actions include `models` (bounded, searchable available-model
 catalog), `start`, `status`, `steer`, `stop`, and `resume`. The parent keeps its
 model and thinking level. Cancel starts nothing. A worker that may have started

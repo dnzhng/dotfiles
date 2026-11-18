@@ -182,7 +182,7 @@ function nativeStatus(
 }
 
 describe("conductor-mode", () => {
-	test("registers an inactive model-only wrapper, activates inspection tools, and inherits safe worker policy", async () => {
+	test("registers an inactive model-only wrapper, keeps normal tools active, and inherits worker policy", async () => {
 		const h = makeHarness();
 		const extension = (await import("../extensions/conductor-mode/index.ts")).default;
 		extension(h.pi as never);
@@ -191,21 +191,33 @@ describe("conductor-mode", () => {
 		expect(registered.exposure).toBe("model-only");
 		await h.handlers.get("session_start")?.[0]?.({}, h.ctx);
 		await h.commands.get("conductor")?.(undefined, h.ctx);
-		expect(h.activeTools()).toEqual(["read", "grep", "find", "ls", "subagent_supervisor", "conductor_worker"]);
+		expect(h.activeTools()).toEqual([...baseTools, "conductor_worker"]);
 		expect(h.runtimeDefinition).toMatchObject({
 			inheritProjectContext: true,
 			inheritGlobalContext: true,
 			allowNestedSubagents: false,
 			defaultAcceptance: { level: "none", reason: "Director verifies evidence" },
 		});
-		expect(h.runtimeDefinition?.systemPrompt).toContain("Do not commit, push, create or switch branches");
+		expect(h.runtimeDefinition?.systemPrompt).toContain("Unless the task brief explicitly directs otherwise, do not commit, push, create or switch branches");
 	});
 
-	test("restores the exact original tool selection on exit", async () => {
+	test("removes only the Conductor tool on exit", async () => {
 		const h = await setup();
-		expect(h.activeTools()).toEqual(["read", "grep", "find", "ls", "subagent_supervisor", "conductor_worker"]);
+		expect(h.activeTools()).toEqual([...baseTools, "conductor_worker"]);
 		await h.commands.get("conductor")?.(undefined, h.ctx);
 		expect(h.activeTools()).toEqual(h.originalTools);
+	});
+
+	test("preserves tools activated mid-session across the next agent turn", async () => {
+		const h = await setup();
+		(h.pi.setActiveTools as (names: string[]) => void)([...h.activeTools(), "subagent_supervisor"]);
+		const event = { systemPromptOptions: { sections: {} as Record<string, string> } };
+		await h.handlers.get("before_agent_start")?.[0]?.(event, h.ctx);
+		expect(h.activeTools()).toContain("subagent_supervisor");
+		expect(h.activeTools()).toContain("conductor_worker");
+		await h.commands.get("conductor")?.(undefined, h.ctx);
+		expect(h.activeTools()).toContain("subagent_supervisor");
+		expect(h.activeTools()).not.toContain("conductor_worker");
 	});
 
 	test("refuses Conductor activation while same-session plan mode or execution is persisted", async () => {
@@ -489,7 +501,6 @@ describe("conductor-mode", () => {
 			data: {
 				enabled: true,
 				owner: "owner-1",
-				original: [...h.originalTools],
 				run: {
 					operation: "spawn",
 					requestId: "ambiguous",
@@ -503,7 +514,7 @@ describe("conductor-mode", () => {
 		extension(h.pi as never);
 		await h.handlers.get("session_start")?.[0]?.({}, h.ctx);
 		expect(h.activeTools()).toContain("conductor_worker");
-		expect(h.activeTools()).not.toContain("edit");
+		expect(h.activeTools()).toContain("edit");
 		expect(h.requests.some((item) => item.method === "spawn")).toBe(false);
 		expect((await execute(h, { action: "status" })).content[0]?.text).toContain("remains unresolved");
 	});
@@ -555,12 +566,12 @@ describe("conductor-mode", () => {
 		expect(h.entries.at(-1)?.data?.run).toBeUndefined();
 	});
 
-	test("allows only top-level native supervisor coordination alongside inspection", async () => {
+	test("blocks only nested coordination calls", async () => {
 		const h = await setup();
 		const invoke = h.handlers.get("tool_call")?.[0];
 		expect(await invoke?.({ toolName: "subagent_supervisor" }, h.ctx)).toBeUndefined();
 		expect(await invoke?.({ toolName: "subagent_supervisor", parentToolCallId: "outer/1" }, h.ctx)).toMatchObject({ block: true });
-		expect(await invoke?.({ toolName: "bash" }, h.ctx)).toMatchObject({ block: true });
+		expect(await invoke?.({ toolName: "bash" }, h.ctx)).toBeUndefined();
 	});
 
 	test("injects director guidance as an active prompt section and removes it on toggle off", async () => {
@@ -569,6 +580,8 @@ describe("conductor-mode", () => {
 		const event = { systemPromptOptions: { sections: {} as Record<string, string> } };
 		await handler?.(event, h.ctx);
 		expect(event.systemPromptOptions.sections["conductor-director"]).toContain("reply to an exact pending ask");
+		expect(event.systemPromptOptions.sections["conductor-director"]).toContain("git (branch/commit/push)");
+		expect(event.systemPromptOptions.sections["conductor-director"]).not.toContain("All other tool calls are blocked");
 		expect(event.systemPromptOptions.sections["conductor-director"]).toContain("conductor_worker action=start with priority=Quality");
 		expect(event.systemPromptOptions.sections["conductor-director"]).toContain("native pre-launch confirmation");
 		expect(event.systemPromptOptions.sections["conductor-director"]).toContain("Do not ask for a separate chat confirmation");
@@ -578,13 +591,13 @@ describe("conductor-mode", () => {
 		expect(event.systemPromptOptions.sections["conductor-director"]).toBeUndefined();
 	});
 
-	test("blocks nested and dynamically exposed execution tools and user bash", async () => {
+	test("allows normal and dynamically exposed tools while blocking nested coordination", async () => {
 		const h = await setup();
 		const invoke = h.handlers.get("tool_call")?.[0];
-		expect(await invoke?.({ toolName: "bash", parentToolCallId: "outer/1" }, h.ctx)).toMatchObject({ block: true });
-		expect(await invoke?.({ toolName: "codemode" }, h.ctx)).toMatchObject({ block: true });
-		expect(await invoke?.({ toolName: "tool_search" }, h.ctx)).toMatchObject({ block: true });
+		expect(await invoke?.({ toolName: "bash", parentToolCallId: "outer/1" }, h.ctx)).toBeUndefined();
+		expect(await invoke?.({ toolName: "codemode" }, h.ctx)).toBeUndefined();
+		expect(await invoke?.({ toolName: "tool_search" }, h.ctx)).toBeUndefined();
 		expect(await invoke?.({ toolName: "conductor_worker", parentToolCallId: "outer/1" }, h.ctx)).toMatchObject({ block: true });
-		expect(await h.handlers.get("user_bash")?.[0]?.({}, h.ctx)).toMatchObject({ result: { exitCode: 126 } });
+		expect(h.handlers.has("user_bash")).toBe(false);
 	});
 });

@@ -15,14 +15,12 @@ import {
 } from "./native.ts";
 import { modelCatalog, parseTarget, targetAvailabilityReason, SPEED_TARGET, type WorkerTarget } from "./models.ts";
 
-const INSPECTION_TOOLS = ["read", "grep", "find", "ls"] as const;
 const COORDINATION_TOOLS = ["subagent_supervisor"] as const;
-const ACTIVE_TOOLS = new Set([...INSPECTION_TOOLS, ...COORDINATION_TOOLS, "conductor_worker"]);
 const RPC_ERROR_NO_ADMISSION = new Set(["invalid_request", "invalid_params", "no_active_session"]);
 const DIRECTOR_PROMPT = [
 	"[CONDUCTOR MODE — DIRECTOR]",
 	"",
-	"Role: inspect and coordinate; make no repository mutations and run no commands yourself.",
+	"Role: route implementation through the worker by default; you may run commands, git (branch/commit/push), edits, and subagents yourself when appropriate. Avoid branch switches or checkout mutations while a worker is running in the same checkout.",
 	"Assess the actual task's worker fit before routing and honor an explicit user priority.",
 	"For a routine, well-scoped edit or focused check, Speed uses instacart-openai/gpt-6-luna:low.",
 	"Start Speed without another route dialog when it clearly fits.",
@@ -30,16 +28,13 @@ const DIRECTOR_PROMPT = [
 	"Offer Speed only when available.",
 	"Cancel starts nothing. There is no classifier call.",
 	"",
-	"Give the worker the complete self-contained brief and required project context.",
+	"Give the worker the complete self-contained brief and required project context. The brief may explicitly authorize git/worktree actions for the worker.",
 	"Use subagent_supervisor only for coordination: inspect status/pending/list and reply to an exact pending ask.",
 	"Read the exact ask. Reply to harmless confirmations and known decisions; never approve out-of-scope writes.",
 	"If an ask requires materially new authority, ask the user. The worker should use contact_supervisor need_decision only when truly blocked; never make routine asks, and use native completion to finish.",
 	"Verify its changed paths, exact check commands, and outcomes.",
 	"Parent model and thinking remain unchanged.",
 	"",
-	"Allowed parent tools this turn: {{allowedTools}}.",
-	"All other tool calls are blocked, including indirect and nested calls.",
-	"Project read/verification tools are read-only; worker shell access is not a sandbox, so do not claim otherwise.",
 ].join("\n");
 const TargetSchema = Type.Object({
 	action: Type.Union([
@@ -85,13 +80,14 @@ export default function conductor(pi: ExtensionAPI): void {
 	const persist = () => pi.appendEntry("conductor-mode", entryFor(state, owner));
 
 	function setTools(enabled: boolean): string[] {
+		const current = pi.getActiveTools();
 		if (!enabled) {
-			pi.setActiveTools(state.original ?? pi.getActiveTools());
-			return [];
+			const tools = current.filter((name) => name !== "conductor_worker");
+			pi.setActiveTools(tools);
+			return tools;
 		}
-		state.original ??= pi.getActiveTools();
 		const registered = new Set(pi.getAllTools().map((tool) => tool.name));
-		const tools = [...INSPECTION_TOOLS, ...COORDINATION_TOOLS, "conductor_worker"].filter((name) => registered.has(name));
+		const tools = [...new Set([...current, "conductor_worker"])].filter((name) => registered.has(name));
 		pi.setActiveTools(tools);
 		return tools;
 	}
@@ -374,8 +370,7 @@ export default function conductor(pi: ExtensionAPI): void {
 				return;
 			}
 			state.enabled = !state.enabled;
-			if (state.enabled) setTools(true);
-			else { setTools(false); state.original = undefined; }
+			setTools(state.enabled);
 			ctx.ui.setStatus("conductor", state.enabled ? ctx.ui.theme.fg("accent", "🎛 conductor") : undefined);
 			persist();
 		},
@@ -386,19 +381,14 @@ export default function conductor(pi: ExtensionAPI): void {
 		if ((event.toolName === "conductor_worker" || COORDINATION_TOOLS.includes(event.toolName as typeof COORDINATION_TOOLS[number])) && event.parentToolCallId) {
 			return { block: true, reason: "Nested Conductor coordination calls are blocked." };
 		}
-		if (ACTIVE_TOOLS.has(event.toolName)) return;
-		return { block: true, reason: `Conductor mode blocks ${event.toolName}. Only inspection and top-level conductor_worker are allowed.` };
 	});
-	pi.on("user_bash", async () => state.enabled ? {
-		result: { output: "Conductor mode blocks ! and !! commands.", exitCode: 126, cancelled: false, truncated: false },
-	} : undefined);
 	pi.on("before_agent_start", async (event, _ctx) => {
 		if (!state.enabled) {
 			delete event.systemPromptOptions.sections["conductor-director"];
 			return;
 		}
-		const allowed = setTools(true);
-		event.systemPromptOptions.sections["conductor-director"] = DIRECTOR_PROMPT.replace("{{allowedTools}}", allowed.join(", "));
+		setTools(true);
+		event.systemPromptOptions.sections["conductor-director"] = DIRECTOR_PROMPT;
 	});
 	pi.on("context", async (event) => ({
 		messages: event.messages.filter((message) => state.enabled || (message as { customType?: string }).customType !== "conductor-context"),
@@ -406,7 +396,7 @@ export default function conductor(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
 		const sessionOwner = ctx.sessionManager.getSessionId();
 		if (owner && owner !== sessionOwner) {
-			if (state.original) pi.setActiveTools(state.original);
+			setTools(false);
 			state = { enabled: false };
 		}
 		owner = sessionOwner;
@@ -430,7 +420,7 @@ export default function conductor(pi: ExtensionAPI): void {
 		nativeReady = false;
 		try { await rpc(pi, "ping", {}, crypto.randomUUID(), 5000); nativeReady = !!registration; } catch { nativeReady = false; }
 		if (state.enabled) setTools(true);
-		else if (state.original) { setTools(false); state.original = undefined; repairedState = true; }
+
 		terminalUnsubscribe?.();
 		terminalUnsubscribe = pi.events.on("subagent:process-terminal", (event) => {
 			const proof = event as { runId?: string };

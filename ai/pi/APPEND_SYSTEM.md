@@ -9,7 +9,7 @@ needed.
 
 ## Conductor mode
 
-While `/conductor` is active, ignore the optional workflow-subagent guidance below; Conductor blocks those tools. Use its Speed/Quality choice and never bypass its tool-call restrictions.
+While `/conductor` is active, delegate implementation through its Speed/Quality worker by default; optional workflow subagents remain available.
 
 ## Optional workflow subagents
 

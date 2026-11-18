@@ -16,7 +16,9 @@ process.env.PI_AGENT_STORE = plansRoot;
 
 mock.module("@earendil-works/pi-tui", () => ({
 	Key: { ctrlAlt: (key: string) => `ctrl-alt-${key}`, ctrlShift: (key: string) => `ctrl-shift-${key}` },
+	isKeyRelease: () => false,
 	matchesKey: () => false,
+	truncateToWidth: (text: string, width: number) => text.slice(0, width),
 	visibleWidth: (text: string) => text.length,
 	wrapTextWithAnsi: (text: string) => [text],
 	Editor: class {},
@@ -38,11 +40,12 @@ const PLAN_TEXT = [
 	"2. Do the second thing",
 ].join("\n");
 
-const EXECUTE_ACTION = "Execute the plan (track progress)";
+const EXECUTE_ACTION = "Execute with subagents (track progress)";
+const EXECUTE_INLINE_ACTION = "Execute inline (track progress)";
 const CONFIGURE_ACTION = "Configure execution model & thinking";
 const CONFIGURE_REVIEW_ACTION = "Configure review model & thinking";
 const STAY_ACTION = "Stay in plan mode";
-const RESET_LABEL = "(reset to the pre-plan model)";
+const RESET_LABEL = "(reset to worker defaults / pre-plan model inline / session default fresh)";
 const REVIEW_RESET_LABEL = "(reset to agent defaults)";
 const REVIEW_LINE = 'model "p/exec:high"';
 
@@ -58,7 +61,9 @@ interface Harness {
 	sentMessages: { customType?: string; content?: string }[];
 	sentUserMessages: { content: unknown; options?: Record<string, unknown> }[];
 	events: string[];
+	activeTools: string[];
 	setModelResult: boolean;
+	thinkingLevel: string;
 }
 
 async function loadExtension(): Promise<Harness> {
@@ -75,9 +80,10 @@ async function loadExtension(): Promise<Harness> {
 		sentMessages,
 		sentUserMessages,
 		events,
+		activeTools: ["read", "bash", "edit", "write"],
 		setModelResult: true,
+		thinkingLevel: "medium",
 	};
-	let activeTools: string[] = ["read", "bash", "edit", "write"];
 
 	const pi = {
 		registerTool: () => {},
@@ -91,15 +97,18 @@ async function loadExtension(): Promise<Harness> {
 			return () => {};
 		},
 		getFlag: () => false,
-		getActiveTools: () => [...activeTools],
+		getAllTools: () => ["subagent", "subagent_supervisor"].map((name) => ({ name })),
+		getActiveTools: () => [...harness.activeTools],
 		setActiveTools: (names: string[]) => {
-			activeTools = [...names];
+			harness.activeTools = [...names];
 		},
 		setModel: async (model: FakeModel) => {
 			events.push(`setModel:${model.provider}/${model.id}`);
 			return harness.setModelResult;
 		},
+		getThinkingLevel: () => harness.thinkingLevel,
 		setThinkingLevel: (level: string) => {
+			harness.thinkingLevel = level;
 			events.push(`setThinking:${level}`);
 		},
 		appendEntry: (customType: string, data: Record<string, unknown>) => {
@@ -232,18 +241,101 @@ afterAll(() => {
 });
 
 describe("execution target persistence", () => {
-	test("applies the configured model and thinking level when executing", async () => {
+	test("offers delegated execution first and an explicit inline action", async () => {
 		const h = await loadExtension();
-		const ctx = makeCtx({ selects: [CONFIGURE_ACTION, "p/exec", "high", EXECUTE_ACTION] });
+		const ctx = makeCtx({ selects: [STAY_ACTION] });
+		await enterPlanMode(h, ctx);
+
+		await runAgentEnd(h, ctx);
+
+		expect(ctx.selectCalls[0]?.options.slice(0, 3)).toEqual([
+			EXECUTE_ACTION,
+			EXECUTE_INLINE_ACTION,
+			"Execute in a fresh session (clear context)",
+		]);
+	});
+
+	test("applies the configured model and thinking level when executing inline", async () => {
+		const h = await loadExtension();
+		const ctx = makeCtx({ selects: [CONFIGURE_ACTION, "p/exec", "high", EXECUTE_INLINE_ACTION] });
 		await enterPlanMode(h, ctx);
 
 		await runAgentEnd(h, ctx);
 
 		expect(h.events).toEqual(["setModel:p/exec", "setThinking:high"]);
 		expect(h.sentMessages.at(-1)?.customType).toBe("plan-mode-execute");
+		expect(lastEntry(h).executionRoute).toBe("inline");
 		expect(lastEntry(h).enabled).toBe(false);
 		expect(lastEntry(h).executing).toBe(true);
 		expect(lastEntry(h).executionConfig).toEqual({ provider: "p", id: "exec", thinkingLevel: "high" });
+	});
+
+	test("delegation restores the parent model and thinking while routing the target to workers", async () => {
+		const h = await loadExtension();
+		const ctx = makeCtx({ selects: [CONFIGURE_ACTION, "p/exec", "high", EXECUTE_ACTION] });
+		await enterPlanMode(h, ctx);
+		expect(lastEntry(h).modelBeforePlanMode).toEqual({
+			provider: "p",
+			id: "pre-plan",
+			thinkingLevel: "medium",
+		});
+		ctx.model = planModel;
+		h.thinkingLevel = "low";
+
+		await runAgentEnd(h, ctx);
+
+		expect(h.events).toEqual(["setModel:p/pre-plan", "setThinking:medium"]);
+		expect(h.events).not.toContain("setModel:p/exec");
+		expect(h.activeTools).toEqual(["read", "bash", "edit", "write", "subagent", "subagent_supervisor"]);
+		expect(lastEntry(h).executionRoute).toBe("delegated");
+		expect(h.sentMessages.at(-1)?.content).toContain('model parameter to "p/exec:high"');
+		expect(h.sentMessages.at(-1)?.content).toContain("Do not apply this target to the parent session");
+		const runningContext = await runBeforeAgentStart(h);
+		expect(runningContext?.message?.content).toContain("native subagent tool");
+		expect(runningContext?.message?.content).toContain('runs.all workflow with agent "plan-patch-worker", worktree: false');
+		expect(runningContext?.message?.content).toContain("git apply --check --recount");
+		expect(runningContext?.message?.content).toContain("Apply one patch at a time");
+		expect(runningContext?.message?.content).toContain('contact_supervisor({ reason: "progress_update"');
+
+		const resumed = await loadExtension();
+		const resumedCtx = makeCtx({ entries: h.entries });
+		await runSessionStart(resumed, resumedCtx, "resume");
+		const resumedContext = await runBeforeAgentStart(resumed);
+		expect(resumedContext?.message?.content).toContain("Delegated implementation");
+		expect(resumedContext?.message?.content).toContain('model parameter to "p/exec:high"');
+	});
+
+	test.each([true, false])("does not launch if the parent model cannot be restored (missing=%s)", async (missing) => {
+		const h = await loadExtension();
+		const ctx = makeCtx({
+			models: missing ? [planModel, execModel] : [planModel, prePlanModel, execModel],
+			selects: [EXECUTE_ACTION],
+		});
+		await enterPlanMode(h, ctx);
+		ctx.model = planModel;
+		h.setModelResult = false;
+
+		await runAgentEnd(h, ctx);
+
+		expect(h.sentMessages).toEqual([]);
+		expect(lastEntry(h).enabled).toBe(true);
+		expect(lastEntry(h).executionRoute).toBeUndefined();
+		expect(lastEntry(h).modelBeforePlanMode).toEqual({ provider: "p", id: "pre-plan", thinkingLevel: "medium" });
+		expect(ctx.notifications.some((n) => n.type === "warning" && n.message.includes("choose inline execution"))).toBe(true);
+	});
+
+	test("toggling plan mode off does not suggest another execution route on failed restore", async () => {
+		const h = await loadExtension();
+		const ctx = makeCtx({ models: [planModel] });
+		await enterPlanMode(h, ctx);
+		ctx.model = planModel;
+
+		await enterPlanMode(h, ctx);
+
+		const warning = ctx.notifications.find((n) => n.message.startsWith("Pre-plan model not found"));
+		expect(warning?.message).not.toContain("inline execution");
+		expect(warning?.type).toBe("warning");
+		expect(lastEntry(h).enabled).toBe(false);
 	});
 
 	test("uses the pre-plan model when no target is configured", async () => {
@@ -254,8 +346,9 @@ describe("execution target persistence", () => {
 
 		await runAgentEnd(h, ctx);
 
-		expect(h.events).toEqual(["setModel:p/pre-plan"]);
+		expect(h.events).toEqual(["setModel:p/pre-plan", "setThinking:medium"]);
 		expect(h.sentMessages.at(-1)?.customType).toBe("plan-mode-execute");
+		expect(lastEntry(h).executionRoute).toBe("delegated");
 	});
 
 	test("carries the target through a resume and still executes with it", async () => {
@@ -273,12 +366,26 @@ describe("execution target persistence", () => {
 				},
 			},
 		];
-		const ctx = makeCtx({ entries, selects: [EXECUTE_ACTION] });
+		const ctx = makeCtx({ entries, selects: [EXECUTE_INLINE_ACTION] });
 		await runSessionStart(h, ctx, "resume");
 
 		await runAgentEnd(h, ctx);
 
 		expect(h.events).toEqual(["setModel:p/exec", "setThinking:low"]);
+	});
+
+	test("keeps route-absent in-flight sessions on the legacy execution instructions", async () => {
+		const h = await loadExtension();
+		const entries = executionEntries([{ step: 1, text: "Do the first thing", completed: false }]);
+		const ctx = makeCtx({ entries });
+		await runSessionStart(h, ctx, "resume");
+
+		const context = await runBeforeAgentStart(h);
+
+		expect(entries.at(-1)?.data?.executionRoute).toBeUndefined();
+		expect(context?.message?.content).toContain("Follow the plan's Multi-Agent Team Structure section");
+		expect(context?.message?.content).not.toContain("Delegated implementation:");
+		expect(context?.message?.content).not.toContain("Inline implementation:");
 	});
 
 	test("tolerates older entries without an execution config", async () => {
@@ -356,7 +463,7 @@ describe("configure flow", () => {
 
 		await runAgentEnd(h, ctx);
 
-		expect(h.events).toEqual(["setModel:p/pre-plan"]);
+		expect(h.events).toEqual(["setModel:p/pre-plan", "setThinking:medium"]);
 	});
 
 	test("reset clears the target", async () => {
@@ -449,7 +556,7 @@ describe("unusable targets", () => {
 
 	test("stays in plan mode when the model switch fails", async () => {
 		const h = await loadExtension();
-		const ctx = makeCtx({ selects: [CONFIGURE_ACTION, "p/exec", "high", EXECUTE_ACTION] });
+		const ctx = makeCtx({ selects: [CONFIGURE_ACTION, "p/exec", "high", EXECUTE_INLINE_ACTION] });
 		await enterPlanMode(h, ctx);
 		h.setModelResult = false;
 
@@ -526,6 +633,8 @@ describe("fresh-session execution", () => {
 		await runFreshExecute(h, makeFreshCtx(ctx, seeded, kickoff));
 
 		expect(kickoff).toHaveLength(1);
+		expect(kickoff[0]).toContain("Inline implementation:");
+		expect(seeded.at(-1)?.data?.executionRoute).toBe("inline");
 		expect(seeded.at(-1)?.data?.executionConfig).toEqual({ provider: "p", id: "exec", thinkingLevel: "high" });
 
 		// Replacement instance: session_start runs before the kickoff is sent.

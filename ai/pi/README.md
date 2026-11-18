@@ -176,10 +176,20 @@ exit) and hooks `tool_call` to block bash outside a read-only allowlist
 must pass). While enabled, a `[PLAN MODE ACTIVE]` prompt is injected every
 turn — and filtered back out of context once disabled — steering the model to
 a numbered `Plan:` list with a verify check per step. On `agent_end` the steps
-are extracted and a select offers Execute / Stay / Refine: Execute restores
-full tools and tracks completion via `[DONE:n]` markers in assistant replies
-(footer `📋 n/m` status + strikethrough widget, "Plan Complete" summary when
-all steps land). State (enabled/todos/executing/pre-plan tool set) persists
+are extracted and a select offers delegated execution, inline execution,
+fresh-session execution, model configuration, Stay, and Refine.
+Delegated execution keeps the pre-plan model and thinking level in the parent
+session while workers use the configured execution target. A single worker can
+edit in place. Independent lanes use read-only `plan-patch-worker` agents to
+prepare patches in parallel without worktrees; the parent applies them one at a
+time and verifies the result before marking `[DONE:n]`. Concurrent writers
+require explicit opt-in to separate checkouts. The Agents sidebar shows worker
+milestones and their age; on narrow terminals it uses compact rows below the
+editor. Inline execution honors the configured execution target; a fresh session
+with no target starts on Pi’s default model.
+Progress (`📋 n/m` status + strikethrough widget, "Plan Complete" summary when
+all steps land) is tracked via `[DONE:n]` markers in assistant replies. State
+(enabled/todos/executing/route/pre-plan model and thinking/tool set) persists
 via `appendEntry`, so resume restores a mid-execution plan, re-scanning only
 messages after the last execute marker for `[DONE:n]` tags. Each
 produced/refined plan is also saved verbatim (frontmatter: `created` + `cwd`)

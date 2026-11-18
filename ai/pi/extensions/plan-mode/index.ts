@@ -100,14 +100,17 @@ interface ExecutionConfig {
 	thinkingLevel: ModelThinkingLevel;
 }
 
+type ExecutionRoute = "delegated" | "inline";
+
 interface PlanModeState {
 	enabled: boolean;
 	todos?: TodoItem[];
 	executing?: boolean;
 	toolsBeforePlanMode?: string[];
 	lastPlanFile?: string;
-	modelBeforePlanMode?: { provider: string; id: string };
+	modelBeforePlanMode?: { provider: string; id: string; thinkingLevel?: ModelThinkingLevel };
 	executionConfig?: ExecutionConfig;
+	executionRoute?: ExecutionRoute;
 	reviewConfig?: ExecutionConfig;
 }
 
@@ -335,13 +338,17 @@ async function cleanupExpiredPlans(ctx: ExtensionContext): Promise<void> {
 	}
 }
 
+const EXECUTE_DELEGATED_ACTION = "Execute with subagents (track progress)";
+const EXECUTE_INLINE_ACTION = "Execute inline (track progress)";
 const CONFIGURE_EXECUTION_ACTION = "Configure execution model & thinking";
 const CONFIGURE_REVIEW_ACTION = "Configure review model & thinking";
-const EXECUTION_RESET_LABEL = "(reset to the pre-plan model)";
+const EXECUTION_DEFAULTS = "worker defaults / pre-plan model inline / session default fresh";
+const EXECUTION_RESET_LABEL = `(reset to ${EXECUTION_DEFAULTS})`;
 const REVIEW_RESET_LABEL = "(reset to agent defaults)";
 
 const PLAN_ACTIONS = [
-	"Execute the plan (track progress)",
+	EXECUTE_DELEGATED_ACTION,
+	EXECUTE_INLINE_ACTION,
 	"Execute in a fresh session (clear context)",
 	CONFIGURE_EXECUTION_ACTION,
 	CONFIGURE_REVIEW_ACTION,
@@ -394,6 +401,11 @@ Before planning:
 - State assumptions explicitly. If multiple interpretations exist, surface them — do not silently pick one.
 - Explore enough of the codebase that every step names real files/symbols, not placeholders.
 
+Execution handoffs:
+- In the Multi-Agent Team Structure, give each implementation lane its plan step numbers, owned files, dependencies, and verify check.
+- Default to one in-place worker for small or coupled work. Independent lanes with non-overlapping files and no unmet dependencies can prepare patches in parallel from the current checkout without editing it. The parent applies and verifies them serially. Only use isolated checkouts for concurrent writers if the user explicitly opts in; honor repo-specific setup (e.g. Carrot graft).
+- The parent verifies accepted changes before marking any step [DONE:n].
+
 Asking the user (interactive planning):
 - Use the questionnaire tool when intent, scope, or approach is genuinely ambiguous, or a decision is worth confirming before the plan is final. Ask EARLY — after initial exploration, before presenting the plan — so answers shape the plan instead of causing refine cycles.
 - Batch related questions into ONE questionnaire call (up to 4), each with 2-4 concrete options, recommended option first. The user can always pick "Type something" to answer free-form.
@@ -430,9 +442,9 @@ which proposal each key idea came from.
 ## Multi-Agent Team Structure
 How execution will be coordinated. Right-size the team to the task — but every plan, small
 ones included, ends with the review team on the implemented diff:
-- Implementation: one agent per genuinely independent chunk (no file overlap, no sequential
-  deps), each in its own worktree — list them explicitly so the coordination flow is
-  unambiguous. Sequential chunks run in order in one worktree. Small plans: implement inline.
+- Implementation: list independent lanes and dependencies. Use one in-place worker for
+  small or coupled work; for independent lanes, prepare patches in parallel without
+  worktrees and apply them serially. Concurrent writers need explicitly approved isolation.
 - Review team (parallel, after implementation — always): reviewer subagents on the diff,
   one per focus — code review (style, AGENTS.md compliance, pattern adherence),
   silent-failure hunt (error-handling correctness), test-coverage analysis, lint/format of
@@ -464,8 +476,9 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	let todoItems: TodoItem[] = [];
 	let toolsBeforePlanMode: string[] | undefined;
 	let lastPlanFile: string | undefined;
-	let modelBeforePlanMode: { provider: string; id: string } | undefined;
+	let modelBeforePlanMode: { provider: string; id: string; thinkingLevel?: ModelThinkingLevel } | undefined;
 	let executionConfig: ExecutionConfig | undefined;
+	let executionRoute: ExecutionRoute | undefined;
 	let reviewConfig: ExecutionConfig | undefined;
 
 	registerQuestionnaireTool(pi);
@@ -543,6 +556,12 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		toolsBeforePlanMode = undefined;
 	}
 
+	function enableDelegationTools(): void {
+		const registered = new Set(pi.getAllTools().map(({ name }) => name));
+		const tools = ["subagent", "subagent_supervisor"].filter((name) => registered.has(name));
+		pi.setActiveTools(uniqueToolNames([...pi.getActiveTools(), ...tools]));
+	}
+
 	function persistState(): void {
 		pi.appendEntry("plan-mode", {
 			enabled: planModeEnabled,
@@ -552,6 +571,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			lastPlanFile,
 			modelBeforePlanMode,
 			executionConfig,
+			executionRoute,
 			reviewConfig,
 		});
 	}
@@ -574,21 +594,31 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		}
 	}
 
-	async function restoreModelBeforePlan(ctx: ExtensionContext): Promise<void> {
+	async function restoreModelBeforePlan(ctx: ExtensionContext, forExecution = false): Promise<boolean> {
 		const saved = modelBeforePlanMode;
-		modelBeforePlanMode = undefined;
-		if (!saved || (ctx.model && ctx.model.provider === saved.provider && ctx.model.id === saved.id)) return;
-		const target = ctx.modelRegistry.find(saved.provider, saved.id);
-		if (!target) return;
-		if (await pi.setModel(target)) {
+		if (!saved) return true;
+		const hint = forExecution ? " Or choose inline execution with a configured model." : "";
+		if (ctx.model?.provider !== saved.provider || ctx.model.id !== saved.id) {
+			const target = ctx.modelRegistry.find(saved.provider, saved.id);
+			if (!target) {
+				ctx.ui.notify(`Pre-plan model not found: ${saved.provider}/${saved.id}. Restore it and try again.${hint}`, "warning");
+				return false;
+			}
+			if (!(await pi.setModel(target))) {
+				ctx.ui.notify(`Could not restore pre-plan model ${target.id}. Check its credentials.${hint}`, "warning");
+				return false;
+			}
 			ctx.ui.notify(`Model restored: ${target.id}`);
 		}
+		if (saved.thinkingLevel) pi.setThinkingLevel(saved.thinkingLevel);
+		modelBeforePlanMode = undefined;
+		return true;
 	}
 
 	function executionLabel(): string {
 		return executionConfig
 			? `${executionConfig.provider}/${executionConfig.id} @ ${executionConfig.thinkingLevel}`
-			: "pre-plan model";
+			: EXECUTION_DEFAULTS;
 	}
 
 	function reviewLabel(): string {
@@ -625,10 +655,11 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	}
 
 	async function applyExecutionConfig(ctx: ExtensionContext): Promise<boolean> {
-		if (!executionConfig) {
-			await restoreModelBeforePlan(ctx);
-			return true;
+		if (executionRoute === "delegated") {
+			if (executionConfig && !resolveConfiguredModel(ctx, executionConfig, "Execution")) return false;
+			return restoreModelBeforePlan(ctx, true);
 		}
+		if (!executionConfig) return restoreModelBeforePlan(ctx, true);
 		const target = resolveConfiguredModel(ctx, executionConfig, "Execution");
 		if (!target) return false;
 		if (!(await pi.setModel(target))) {
@@ -667,7 +698,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		const picked = await pickModelConfig(ctx, `Execution model${current}`, EXECUTION_RESET_LABEL);
 		if (picked === undefined) return;
 		executionConfig = picked === "reset" ? undefined : picked;
-		ctx.ui.notify(picked === "reset" ? "Execution will use the pre-plan model." : `Execution: ${executionLabel()}`, "info");
+		ctx.ui.notify(`Execution: ${executionLabel()}`, "info");
 	}
 
 	async function configureReview(ctx: ExtensionContext): Promise<void> {
@@ -680,7 +711,34 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 
 	function reviewModelInstruction(): string {
 		if (!reviewConfig) return "";
-		return `Review model: launch every review-team subagent and the final staff-level review with model "${reviewConfig.provider}/${reviewConfig.id}:${reviewConfig.thinkingLevel}" (subagent model param); implementation agents and comment-sweeper keep their defaults.`;
+		return `Review model: launch every review-team subagent and the final staff-level review with model "${reviewConfig.provider}/${reviewConfig.id}:${reviewConfig.thinkingLevel}" (subagent model param); comment-sweeper keeps its default.`;
+	}
+
+	function executionInstructions(route?: ExecutionRoute): string {
+		if (route === "delegated") {
+			const workerModel = executionConfig
+				? `Set each implementation subagent's model parameter to "${executionConfig.provider}/${executionConfig.id}:${executionConfig.thinkingLevel}". Do not apply this target to the parent session.`
+				: "Use implementation workers' configured defaults; do not change the parent session model.";
+			return `Delegated implementation: read the full plan before dispatch. Use the native subagent tool with async: true and agent "worker" for implementation. If needed, first activate it with subagents_enable. Use one in-place worker (worktree: false) for small or coupled work. For independent lanes with non-overlapping owned files and no unmet dependencies, use an async runs.all workflow with agent "plan-patch-worker", worktree: false, and a separate output artifact per lane. These workers have no checkout-writing tools and return unified diffs. Stop all writes to the shared checkout while workers prepare patches so they see a stable base. After this batch settles, inspect each patch for unexpected files or changes, ensure it ends in a newline, run git apply --check --recount, then apply it with git apply --recount. Apply one patch at a time and stop on any check failure. Workers that need to edit or run checks against actual edits must run serially in the shared checkout unless the user explicitly opts into isolated checkouts. For isolated writers, check clean-base eligibility and honor repo-specific setup such as Carrot graft. A plan's worktree suggestion alone is not opt-in.
+For each handoff pass the plan path or relevant plan text, step numbers, owned files, dependencies, verify check, and whether the worker may edit or must return a patch only.
+${workerModel}
+Tell workers to send one-line updates at meaningful implementation and verification milestones, and immediately on blockers, through contact_supervisor({ reason: "progress_update", message: "..." }); use contact_supervisor({ reason: "need_decision", message: "..." }) for a blocking decision and wait. Keep the parent available for decisions and don't write concurrently in a worker's checkout. Yield for native completion; do not poll or wait with bg_wait. Before any dispatch, reconcile existing run IDs and handoffs for these steps. Never relaunch a step with a live run. On launch failure or unknown run state, stop and report what ran and what remains; don't silently retry, duplicate a writer, or switch to inline.
+After workers finish, inspect and integrate their changes, resolve conflicts, run the combined verify checks, and only then include [DONE:n] for each accepted step. A worker's completion alone is not acceptance. Then run the review/quality pass and comment-sweeper on the integrated changed-file list. Do not commit anything unless the user explicitly asks.`;
+		}
+		if (route === "inline") {
+			return `Inline implementation: complete the remaining implementation steps in this parent session; do not delegate implementation lanes.
+After each step, run its verify check and include [DONE:n] only after verification. After implementation, run the plan's review team and the comment-sweeper on the changed-file list per the AGENTS.md zero-comment policy. Do not commit anything unless the user explicitly asks.`;
+		}
+		return `Follow the plan's Multi-Agent Team Structure section when it has one, without allocating
+new worktrees unless the user explicitly opts in. In a shared checkout, independent workers
+can prepare patches in parallel; apply them serially or run in-place writers serially.
+After implementation, run a parallel quality pass (review, silent-failure hunt, test coverage, lint/format),
+simplify, and run a final staff-level review.
+Comment audit (always): as part of the review pass, dispatch the comment-sweeper subagent on the
+changed files so it strips over-added comments per the AGENTS.md zero-comment policy.
+Small plans without that section: implement inline, then the quality pass.
+After each step passes its verify check, include a [DONE:n] tag.
+Do not commit anything unless the user explicitly asks.`;
 	}
 
 	async function togglePlanMode(ctx: ExtensionContext): Promise<void> {
@@ -689,11 +747,18 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		todoItems = [];
 		lastPlanFile = undefined;
 		executionConfig = undefined;
+		executionRoute = undefined;
 		reviewConfig = undefined;
 
 		if (planModeEnabled) {
 			enablePlanModeTools();
-			if (ctx.model) modelBeforePlanMode = { provider: ctx.model.provider, id: ctx.model.id };
+			if (ctx.model) {
+				modelBeforePlanMode = {
+					provider: ctx.model.provider,
+					id: ctx.model.id,
+					thinkingLevel: pi.getThinkingLevel(),
+				};
+			}
 			await switchToPlanModel(ctx);
 			ctx.ui.notify("Plan mode enabled. Built-in write tools disabled.");
 		} else {
@@ -744,11 +809,8 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				`Execute the plan saved at: ${planFile}`,
 				"",
 				"Read the plan file first — it has the context, approach, and full step detail. Then execute the steps in order, keeping changes surgical.",
-				"After completing a step, run its verify check, then include a [DONE:n] tag in your response.",
-				"Delegation: follow the plan's Multi-Agent Team Structure section if it has one — parallel implementation agents in separate worktrees for independent chunks, a parallel quality pass after implementation, then simplify + final review. Small plans: implement inline, then the quality pass.",
-				"Comment audit (always): as part of the review pass, dispatch the comment-sweeper subagent with the changed-file list so it strips over-added comments per the AGENTS.md zero-comment policy (it may edit files; give it a verify command such as the repo's type-check or lint).",
+				executionInstructions("inline"),
 				...(reviewLine ? [reviewLine] : []),
-				"Do not commit anything unless the user explicitly asks.",
 			].join("\n");
 
 			const result = await ctx.newSession({
@@ -762,6 +824,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 						executing: true,
 						lastPlanFile: planFile,
 						executionConfig: config,
+						executionRoute: "inline",
 						reviewConfig: reviewConfigForSession,
 					});
 				},
@@ -785,6 +848,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				}
 				todoItems = [];
 				executionMode = false;
+				executionRoute = undefined;
 				updateStatus(ctx);
 				persistState();
 				ctx.ui.notify("Plan todos dismissed.", "info");
@@ -866,15 +930,8 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 Remaining steps:
 ${todoList}
 
-Execute each step in order. Keep changes surgical — only what the step requires.
-After completing a step, run its verify check, then include a [DONE:n] tag in your response.
-Follow the plan's Multi-Agent Team Structure section when it has one: parallel implementation
-subagents in separate worktrees for independent chunks, then a parallel quality pass (review,
-silent-failure hunt, test coverage, lint/format), then simplify + a final staff-level review.
-Comment audit (always): as part of the review pass, dispatch the comment-sweeper subagent on the
-changed files so it strips over-added comments per the AGENTS.md zero-comment policy.
-Small plans without that section: implement inline, then the quality pass.
-${reviewLine ? `${reviewLine}\n` : ""}Do not commit anything unless the user explicitly asks.${planFileLine}`,
+Follow the plan's dependencies. Keep changes surgical — only what each step requires.
+${executionInstructions(executionRoute)}${reviewLine ? `\n${reviewLine}` : ""}${planFileLine}`,
 					display: false,
 				},
 			};
@@ -908,6 +965,7 @@ ${reviewLine ? `${reviewLine}\n` : ""}Do not commit anything unless the user exp
 				if (lastPlanFile && (await promptForExecutedPlanFile(ctx, lastPlanFile))) {
 					lastPlanFile = undefined; // file deleted — don't persist a stale path
 				}
+				executionRoute = undefined;
 				updateStatus(ctx);
 				persistState(); // Save cleared state so resume doesn't restore old execution mode
 			}
@@ -965,17 +1023,22 @@ ${reviewLine ? `${reviewLine}\n` : ""}Do not commit anything unless the user exp
 			return;
 		}
 
-		if (choice?.startsWith("Execute")) {
+		if (choice === EXECUTE_DELEGATED_ACTION || choice === EXECUTE_INLINE_ACTION) {
 			const firstTodoItem = todoItems[0];
 			if (!firstTodoItem) return;
 			// Apply the targets first: an unusable one leaves the user in plan mode (menu
 			// still available) instead of executing on an unintended model.
 			if (reviewConfig && !resolveConfiguredModel(ctx, reviewConfig, "Review")) return;
-			if (!(await applyExecutionConfig(ctx))) return;
+			executionRoute = choice === EXECUTE_DELEGATED_ACTION ? "delegated" : "inline";
+			if (!(await applyExecutionConfig(ctx))) {
+				executionRoute = undefined;
+				return;
+			}
 
 			planModeEnabled = false;
 			executionMode = true;
 			restoreNormalModeTools();
+			if (executionRoute === "delegated") enableDelegationTools();
 			updateStatus(ctx);
 			persistState();
 
@@ -988,12 +1051,7 @@ Remaining steps:
 ${remainingList}
 
 Start with: ${firstTodoItem.text}
-After completing a step, run its verify check, then include a [DONE:n] tag in your response.
-Delegation: follow the plan's Multi-Agent Team Structure section (full plan file below) — parallel
-implementation agents in separate worktrees for independent chunks, a parallel quality pass after
-implementation, then simplify + final review. Small plans: implement inline, then the quality pass.
-Comment audit (always): as part of the review pass, dispatch the comment-sweeper subagent with the
-changed-file list so it strips over-added comments per the AGENTS.md zero-comment policy.${reviewLine ? `\n${reviewLine}` : ""}${planFileLine}`;
+${executionInstructions(executionRoute)}${reviewLine ? `\n${reviewLine}` : ""}${planFileLine}`;
 			pi.sendMessage(
 				{ customType: "plan-mode-execute", content: execMessage, display: true },
 				{ triggerTurn: true, deliverAs: "followUp" },
@@ -1042,6 +1100,7 @@ changed-file list so it strips over-added comments per the AGENTS.md zero-commen
 			lastPlanFile = planModeEntry.data.lastPlanFile ?? lastPlanFile;
 			modelBeforePlanMode = planModeEntry.data.modelBeforePlanMode ?? modelBeforePlanMode;
 			executionConfig = planModeEntry.data.executionConfig ?? executionConfig;
+			executionRoute = planModeEntry.data.executionRoute;
 			reviewConfig = planModeEntry.data.reviewConfig ?? reviewConfig;
 		}
 
@@ -1077,10 +1136,16 @@ changed-file list so it strips over-added comments per the AGENTS.md zero-commen
 			// then re-apply the plan model — pi.setModel is session-scoped and sessions
 			// resume on the default model.
 			if (!modelBeforePlanMode && ctx.model) {
-				modelBeforePlanMode = { provider: ctx.model.provider, id: ctx.model.id };
+				modelBeforePlanMode = {
+					provider: ctx.model.provider,
+					id: ctx.model.id,
+					thinkingLevel: pi.getThinkingLevel(),
+				};
 			}
 			await switchToPlanModel(ctx);
 			enablePlanModeTools();
+		} else if (executionMode && executionRoute === "delegated") {
+			enableDelegationTools();
 		} else if (event.reason === "new" && executionMode && executionConfig) {
 			// Fresh-session execute: the replacement session starts on the default model, so
 			// apply the per-plan target here (before the kickoff message). Resumes and reloads

@@ -34,8 +34,8 @@
  *
  * Known limitations (v1): plain foreground subagent runs keep state in memory
  * inside pi-subagents and never touch the disk reader, so only async/workflow
- * runs appear; nested child-of-child runs may not each appear; on narrow
- * terminals there is no subagent status line (Ctrl+Alt+F inspector unaffected).
+ * runs appear; nested child-of-child runs may not each appear; narrow terminals
+ * show the compact Agents fallback instead of the margin panel.
  */
 
 import { closeSync, fstatSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
@@ -90,6 +90,8 @@ interface RunStepLite {
 	toolCount?: number;
 	model?: string;
 	thinking?: string;
+	progressText?: string;
+	progressUpdatedAt?: number;
 	tokens?: { total?: number };
 }
 
@@ -286,6 +288,15 @@ function entryCount(rows: AgentRow[]): number {
 	return rows.reduce((n, r) => n + Math.max(1, (r.status.steps ?? []).length), 0);
 }
 
+function entryProgress(entry: AgentEntry, now: number, compact = false): string | undefined {
+	const text = entry.step?.progressText?.trim();
+	if (!text) return undefined;
+	const updatedAt = entry.step?.progressUpdatedAt;
+	const age = typeof updatedAt === "number" && Number.isFinite(updatedAt) ? `${elapsed(now, updatedAt)} ago` : undefined;
+	const summary = truncateToWidth(text, 80);
+	return (compact ? [age, summary] : [summary, age]).filter(Boolean).join(" · ");
+}
+
 /** Read the last maxBytes of a file, dropping the first partial line. "" on error. */
 function readTail(path: string, maxBytes: number): string {
 	let fd: number | undefined;
@@ -414,12 +425,19 @@ function stepGlyph(theme: Theme, state: string): string {
 	return theme.fg("muted", "◦");
 }
 
-function agentLines(theme: Theme, rows: AgentRow[], now: number, selectedIndex: number, inspecting: boolean): string[] {
+function agentLines(
+	theme: Theme,
+	rows: AgentRow[],
+	now: number,
+	selectedIndex: number,
+	inspecting: boolean,
+	compact = false,
+): string[] {
 	const lines = [theme.fg("accent", "Agents")];
 	let idx = 0;
 	for (const row of rows) {
 		const multi = (row.status.steps ?? []).length > 1;
-		if (multi) {
+		if (multi && !compact) {
 			// Workflow header — aggregate counts + elapsed, not selectable.
 			const glyph = row.state === "running" ? theme.fg("accent", "●") : theme.fg("muted", "◦");
 			const detail = [row.state, elapsed(now, row.startedAt)].join(" · ");
@@ -427,7 +445,11 @@ function agentLines(theme: Theme, rows: AgentRow[], now: number, selectedIndex: 
 		}
 		for (const e of entriesOf(row)) {
 			const marker = inspecting && idx === selectedIndex ? theme.fg("accent", ">") : " ";
-			if (multi) {
+			const progress = entryProgress(e, now, compact);
+			if (compact) {
+				const detail = progress ?? e.state;
+				lines.push(`${marker}${stepGlyph(theme, e.state)} ${theme.fg("muted", e.label)} ${theme.fg("dim", detail)}`);
+			} else if (multi) {
 				const state =
 					e.state === "running"
 						? (e.activity ?? "running")
@@ -436,10 +458,12 @@ function agentLines(theme: Theme, rows: AgentRow[], now: number, selectedIndex: 
 							: e.state === "complete" || e.state === "completed"
 								? "done"
 								: e.state;
-				const detail = e.turnCount ? `${state} · ${e.turnCount}t/${e.toolCount ?? 0}u` : state;
+				const detail = [e.turnCount ? `${state} · ${e.turnCount}t/${e.toolCount ?? 0}u` : state, progress]
+					.filter(Boolean)
+					.join(" · ");
 				lines.push(` ${marker}${stepGlyph(theme, e.state)} ${theme.fg("muted", e.label)} ${theme.fg("dim", detail)}`);
 			} else {
-				const detail = [e.state, e.activity, elapsed(now, e.row.startedAt)].filter(Boolean).join(" · ");
+				const detail = [e.state, e.activity, elapsed(now, e.row.startedAt), progress].filter(Boolean).join(" · ");
 				lines.push(`${marker}${stepGlyph(theme, e.state)} ${theme.fg("muted", e.label)} ${theme.fg("dim", detail)}`);
 			}
 			idx++;
@@ -465,6 +489,7 @@ export default function sidePanelExtension(pi: ExtensionAPI): void {
 	let inspecting = false;
 	let overlayOpen = false;
 	let lastPanelJson = "";
+	let lastCompactAgentLines = "";
 
 	function panelWidth(): number {
 		const margin = (process.stdout.columns || 0) - MAX_WIDTH;
@@ -559,7 +584,15 @@ export default function sidePanelExtension(pi: ExtensionAPI): void {
 				// stale ctx during shutdown — nothing to notify
 			}
 		}
-		agentRows = bus.capable ? listActiveRuns(sessionKeys()) : agentRows;
+		agentRows = listActiveRuns(sessionKeys());
+		const compactLines = !bus.capable && ui && agentRows.length > 0
+			? agentLines(ui.ui.theme, agentRows, Date.now(), 0, false, true)
+			: [];
+		const compactJson = JSON.stringify(compactLines);
+		if (compactJson !== lastCompactAgentLines) {
+			lastCompactAgentLines = compactJson;
+			if (!bus.capable) tui?.requestRender();
+		}
 		rebuildPanel();
 	}
 
@@ -802,6 +835,7 @@ export default function sidePanelExtension(pi: ExtensionAPI): void {
 		tui = undefined;
 		agentRows = [];
 		lastPanelJson = "";
+		lastCompactAgentLines = "";
 		try {
 			unsubInput?.();
 		} catch {
@@ -828,13 +862,20 @@ export default function sidePanelExtension(pi: ExtensionAPI): void {
 		if (!ctx.hasUI) return;
 		ui = ctx;
 
-		// Zero-line widget purely to capture the real renderer (for requestRender);
-		// belowEditor placement adds no spacer rows, so this renders as nothing.
+		// Reuse the renderer capture widget for a compact Agents fallback on narrow terminals.
 		ctx.ui.setWidget(
 			WIDGET_KEY,
 			(captured) => {
 				tui = captured;
-				return { render: () => [], invalidate: () => {} };
+				return {
+					render: (width: number) =>
+						getBus().capable || agentRows.length === 0
+							? []
+							: agentLines(ctx.ui.theme, agentRows, Date.now(), 0, false, true).map((line) =>
+									truncateToWidth(line, width),
+								),
+					invalidate: () => {},
+				};
 			},
 			{ placement: "belowEditor" },
 		);

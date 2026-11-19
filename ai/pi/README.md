@@ -213,8 +213,10 @@ focus the sidebar, `Tab` to switch between Agents and Plan, `↑` / `↓` to
 select a step, and `Enter` to open its full text and verification. Scroll the
 overlay with arrows or Page Up / Page Down; `Esc` closes it.
 Progress (`📋 n/m` status + strikethrough widget, "Plan Complete" summary when
-all steps land) is tracked via standalone `[DONE:n]` lines in parent assistant
-replies. Inline or fenced examples and child completion notices do not count. State
+all steps land) is tracked via `[DONE:n]` markers in parent assistant replies,
+either standalone or as a contiguous leading group before optional prose. Bare
+`Done: n` remains standalone-only. Inline or fenced examples and child completion
+notices do not count. State
 (enabled/todos/executing/route/pre-plan model and thinking/tool set) persists
 via `appendEntry`, so resume restores a mid-execution plan, re-scanning only
 messages after the last execute marker for `[DONE:n]` tags. Each

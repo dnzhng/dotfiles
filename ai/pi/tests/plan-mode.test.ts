@@ -965,8 +965,8 @@ describe("progress tracking", () => {
 			message: { role: "custom", customType: "subagent-notify", content: [{ type: "text", text: "[DONE:1]" }] },
 		}, ctx);
 		expect(getBus().todos?.items.map((item) => item.completed)).toEqual([false, false]);
-		await runTurnEnd(h, ctx, [{ type: "text", text: "Verified the first step.\n[DONE:1]  " }]);
-		expect(getBus().todos?.items.map((item) => item.completed)).toEqual([true, false]);
+		await runTurnEnd(h, ctx, [{ type: "text", text: "Verified the first step.\n[DONE:1] [DONE:2] PR A is force-pushed and GitHub reports it mergeable." }]);
+		expect(getBus().todos?.items.map((item) => item.completed)).toEqual([true, true]);
 		expect(lastEntry(h).todos).toEqual(getBus().todos?.items);
 	});
 

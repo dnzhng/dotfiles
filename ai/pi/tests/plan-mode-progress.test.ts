@@ -74,6 +74,8 @@ describe("extractDoneSteps", () => {
 	test("recognizes standalone marker lines and ignores inline-code examples", () => {
 		expect(extractDoneSteps("\n[DONE:1]  \n[DONE: 2]\n[DONE 3]\n[Done:4]\nDone: 5  \n")).toEqual([1, 2, 3, 4, 5]);
 		expect(extractDoneSteps("The literal marker `[DONE:1]` is an example.\nThis is prose [DONE:2].")).toEqual([]);
+		expect(extractDoneSteps("[DONE:1] [DONE:2] [DONE:3] [DONE:4] PR A is force-pushed and GitHub reports it mergeable.")).toEqual([1, 2, 3, 4]);
+		expect(extractDoneSteps("[DONE:1] then prose [DONE:2]")).toEqual([1]);
 		expect(extractDoneSteps("```text\n[DONE:1]\nDone: 2\n```\n[DONE:3]")).toEqual([3]);
 		expect(extractDoneSteps("````text\n```\n[DONE:1]\n~~~~\n[DONE:2]\n````\n[DONE:3]")).toEqual([3]);
 	});

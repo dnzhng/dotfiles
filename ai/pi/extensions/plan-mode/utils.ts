@@ -215,6 +215,11 @@ export function extractDoneSteps(message: string): number[] {
 			continue;
 		}
 		const line = rawLine.trim();
+		const markers = line.match(/^(?:[-*]\s+)?((?:\[DONE\s*:?\s*\d+\](?:\s+|$))+)(?:.*)$/i);
+		if (markers) {
+			for (const match of markers[1].matchAll(/\[DONE\s*:?\s*(\d+)\]/gi)) steps.push(Number(match[1]));
+			continue;
+		}
 		let match = line.match(/^(?:[-*]\s+)?\[DONE\s*:?\s*(\d+)\]$/i);
 		if (!match) match = line.match(/^(?:[-*]\s+)?Done\s*:\s*(\d+)$/i);
 		if (!match) match = line.match(/^(?:[-*]\s+)?Step\s*(\d+)\s+(?:is\s+)?(?:done|complete|completed|finished)[.!]?$/i);
